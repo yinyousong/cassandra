@@ -1,5 +1,6 @@
 0.8.11-dev
  * make boundedstatsdeque threadsafe (CASSANDRA-4019)
+ * allow overriding RING_DELAY (CASSANDRA-3600)
 
 
 0.8.10
