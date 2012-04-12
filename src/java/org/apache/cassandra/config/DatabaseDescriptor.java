@@ -662,6 +662,11 @@ public class DatabaseDescriptor
         return System.getProperty("cassandra.initial_token", conf.initial_token);
     }
 
+    public static Integer getNumTokens()
+    {
+        return conf.num_tokens;
+    }
+
     public static String getReplaceToken()
     {
         return System.getProperty("cassandra.replace_token", null);

@@ -19,12 +19,17 @@ package org.apache.cassandra.gms;
 
 import java.io.*;
 import java.net.InetAddress;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
 import java.util.UUID;
 
 import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.io.IVersionedSerializer;
 import org.apache.cassandra.utils.FBUtilities;
+import org.apache.commons.lang.StringUtils;
 
 
 /**
@@ -97,14 +102,34 @@ public class VersionedValue implements Comparable<VersionedValue>
             this.partitioner = partitioner;
         }
 
+        @Deprecated
         public VersionedValue bootstrapping(Token token)
         {
-            return new VersionedValue(VersionedValue.STATUS_BOOTSTRAPPING + VersionedValue.DELIMITER + partitioner.getTokenFactory().toString(token));
+            return bootstrapping(Collections.singleton(token));
         }
 
+        public VersionedValue bootstrapping(Collection<Token> tokens)
+        {
+            List<String> tokenString = new ArrayList<String>();
+            for (Token token : tokens)
+                tokenString.add(partitioner.getTokenFactory().toString(token));
+            return new VersionedValue(VersionedValue.STATUS_BOOTSTRAPPING + VersionedValue.DELIMITER + 
+                    StringUtils.join(tokens, VersionedValue.DELIMITER));
+        }
+
+        @Deprecated
         public VersionedValue normal(Token token)
         {
-            return new VersionedValue(VersionedValue.STATUS_NORMAL + VersionedValue.DELIMITER + partitioner.getTokenFactory().toString(token));
+            return normal(Collections.singleton(token));
+        }
+
+        public VersionedValue normal(Collection<Token> tokens)
+        {
+            List<String> tokenString = new ArrayList<String>();
+            for (Token token : tokens)
+                tokenString.add(partitioner.getTokenFactory().toString(token));
+            return new VersionedValue(VersionedValue.STATUS_NORMAL + VersionedValue.DELIMITER + 
+                    StringUtils.join(tokens, VersionedValue.DELIMITER));
         }
 
         public VersionedValue load(double load)
