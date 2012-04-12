@@ -1,0 +1,7 @@
+From: Eric Evans <eevans@apache.org>
+Subject: [PATCH] p/4120/01_create_store_host_uuid
+
+Reference hosts by UUID not Token. See CASSANDRA-4120
+(https://issues.apache.org/jira/browse/CASSANDRA-4120).
+
+Signed-off-by: Eric Evans <eevans@apache.org>
