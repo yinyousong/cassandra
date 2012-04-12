@@ -1,7 +1,7 @@
 From: Eric Evans <eevans@apache.org>
-Subject: [PATCH] p/4120/01_create_store_host_uuid
+Subject: [PATCH] p/4121/01_support_multiple_tokens_per_host
 
-Reference hosts by UUID not Token. See CASSANDRA-4120
+Support associating more than one token per node.  See CASSANDRA-4121
 (https://issues.apache.org/jira/browse/CASSANDRA-4120).
 
 Signed-off-by: Eric Evans <eevans@apache.org>
