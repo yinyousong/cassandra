@@ -126,10 +126,10 @@ public class VersionedValue implements Comparable<VersionedValue>
         public VersionedValue normal(Collection<Token> tokens, UUID hostId)
         {
             List<String> tokenString = new ArrayList<String>();
-            for (Token token : tokens)
+            for (Token<?> token : tokens)
                 tokenString.add(partitioner.getTokenFactory().toString(token));
             return new VersionedValue(versionString(VersionedValue.STATUS_NORMAL,
-                                                    hostID.toString,
+                                                    hostId.toString(),
                                                     StringUtils.join(tokenString, VersionedValue.DELIMITER)));
         }
 
