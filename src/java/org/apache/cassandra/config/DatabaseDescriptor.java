@@ -414,7 +414,8 @@ public class DatabaseDescriptor
             }
 
             if (conf.initial_token != null)
-                partitioner.getTokenFactory().validate(conf.initial_token);
+                for (String token : conf.initial_token.split(","))
+                    partitioner.getTokenFactory().validate(token);
 
             try
             {

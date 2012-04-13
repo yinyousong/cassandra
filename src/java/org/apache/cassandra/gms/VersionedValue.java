@@ -114,7 +114,7 @@ public class VersionedValue implements Comparable<VersionedValue>
             for (Token token : tokens)
                 tokenString.add(partitioner.getTokenFactory().toString(token));
             return new VersionedValue(VersionedValue.STATUS_BOOTSTRAPPING + VersionedValue.DELIMITER + 
-                    StringUtils.join(tokens, VersionedValue.DELIMITER));
+                    StringUtils.join(tokenString, VersionedValue.DELIMITER));
         }
 
         @Deprecated
@@ -129,7 +129,7 @@ public class VersionedValue implements Comparable<VersionedValue>
             for (Token token : tokens)
                 tokenString.add(partitioner.getTokenFactory().toString(token));
             return new VersionedValue(VersionedValue.STATUS_NORMAL + VersionedValue.DELIMITER + 
-                    StringUtils.join(tokens, VersionedValue.DELIMITER));
+                    StringUtils.join(tokenString, VersionedValue.DELIMITER));
         }
 
         public VersionedValue load(double load)
