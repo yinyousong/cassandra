@@ -118,18 +118,19 @@ public class VersionedValue implements Comparable<VersionedValue>
         }
 
         @Deprecated
-        public VersionedValue normal(Token token)
+        public VersionedValue normal(Token token, UUID hostId)
         {
-            return normal(Collections.singleton(token));
+            return normal(Collections.singleton(token), hostId);
         }
 
-        public VersionedValue normal(Collection<Token> tokens)
+        public VersionedValue normal(Collection<Token> tokens, UUID hostId)
         {
             List<String> tokenString = new ArrayList<String>();
             for (Token token : tokens)
                 tokenString.add(partitioner.getTokenFactory().toString(token));
-            return new VersionedValue(VersionedValue.STATUS_NORMAL + VersionedValue.DELIMITER + 
-                    StringUtils.join(tokenString, VersionedValue.DELIMITER));
+            return new VersionedValue(versionString(VersionedValue.STATUS_NORMAL,
+                                                    hostID.toString,
+                                                    StringUtils.join(tokenString, VersionedValue.DELIMITER)));
         }
 
         public VersionedValue load(double load)
@@ -207,6 +208,11 @@ public class VersionedValue implements Comparable<VersionedValue>
         public VersionedValue severity(double value)
         {
             return new VersionedValue(String.valueOf(value));
+        }
+
+        private String versionString(String...args)
+        {
+            return StringUtils.join(args, VersionedValue.DELIMITER);
         }
     }
 

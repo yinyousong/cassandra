@@ -27,6 +27,7 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
@@ -203,19 +204,20 @@ public class Util
      * Creates initial set of nodes and tokens. Nodes are added to StorageService as 'normal'
      */
     public static void createInitialRing(StorageService ss, IPartitioner partitioner, List<Token> endpointTokens,
-                                   List<Token> keyTokens, List<InetAddress> hosts, int howMany)
+                                   List<Token> keyTokens, List<InetAddress> hosts, List<UUID> hostIds, int howMany)
         throws UnknownHostException
     {
         for (int i=0; i<howMany; i++)
         {
             endpointTokens.add(new BigIntegerToken(String.valueOf(10 * i)));
             keyTokens.add(new BigIntegerToken(String.valueOf(10 * i + 5)));
+            hostIds.add(UUID.randomUUID());
         }
 
         for (int i=0; i<endpointTokens.size(); i++)
         {
             InetAddress ep = InetAddress.getByName("127.0.0." + String.valueOf(i + 1));
-            ss.onChange(ep, ApplicationState.STATUS, new VersionedValue.VersionedValueFactory(partitioner).normal(endpointTokens.get(i)));
+            ss.onChange(ep, ApplicationState.STATUS, new VersionedValue.VersionedValueFactory(partitioner).normal(endpointTokens.get(i), hostIds.get(i)));
             hosts.add(ep);
         }
 

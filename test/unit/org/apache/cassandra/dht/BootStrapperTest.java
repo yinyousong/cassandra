@@ -26,6 +26,7 @@ import java.util.HashSet;
 import java.util.HashMap;
 import java.util.Set;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 
 import org.junit.Test;
@@ -110,7 +111,7 @@ public class BootStrapperTest extends SchemaLoader
         // indicate that one of the nodes is done. see if the node it was bootstrapping from is still available.
         Range<Token> range = ss.getPrimaryRangeForEndpoint(addrs[2]);
         Token token = StorageService.getPartitioner().midpoint(range.left, range.right);
-        ss.onChange(bootstrapAddrs[2], ApplicationState.STATUS, StorageService.instance.valueFactory.normal(token));
+        ss.onChange(bootstrapAddrs[2], ApplicationState.STATUS, StorageService.instance.valueFactory.normal(token, UUID.randomUUID()));
         load.put(bootstrapAddrs[2], 0d);
         InetAddress addr = BootStrapper.getBootstrapSource(ss.getTokenMetadata(), load);
         assert addr != null && addr.equals(addrs[2]);
