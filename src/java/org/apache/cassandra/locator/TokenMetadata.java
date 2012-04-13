@@ -44,6 +44,9 @@ public class TokenMetadata
     /* Maintains token to endpoint map of every node in the cluster. */
     private final BiMultiValMap<Token, InetAddress> tokenToEndpointMap;
 
+    /* Maintains endpoint to host ID map of every node in the cluster */
+    private final BiMap<InetAddress, UUID> endpointToHostIdMap;
+
     // Prior to CASSANDRA-603, we just had <tt>Map<Range, InetAddress> pendingRanges<tt>,
     // which was added to when a node began bootstrap and removed from when it finished.
     //
@@ -95,6 +98,7 @@ public class TokenMetadata
         if (tokenToEndpointMap == null)
             tokenToEndpointMap = new BiMultiValMap<Token, InetAddress>();
         this.tokenToEndpointMap = tokenToEndpointMap;
+        endpointToHostIdMap = HashBiMap.create();
         sortedTokens = sortTokens();
     }
 
@@ -187,6 +191,49 @@ public class TokenMetadata
         {
             lock.writeLock().unlock();
         }
+    }
+
+    /**
+     * Store an end-point to host ID mapping.  Each ID must be unique, and
+     * cannot be changed after the fact.
+     *
+     * @param hostId
+     * @param endpoint
+     */
+    public void maybeAddHostId(UUID hostId, InetAddress endpoint)
+    {
+        assert hostId != null;
+        assert endpoint != null;
+
+        InetAddress storedEp = endpointToHostIdMap.inverse().get(hostId);
+        if (storedEp != null)
+        {
+            if (!storedEp.equals(endpoint))
+            {
+                throw new RuntimeException(String.format("Host ID collision between %s and %s (id=%s)",
+                                                         storedEp,
+                                                         endpoint,
+                                                         hostId));
+            }
+
+            return;    // Already stored
+        }
+
+        UUID storedId = endpointToHostIdMap.get(endpoint);
+        if (storedId != null)
+        {
+            if (!storedId.equals(hostId))
+            {
+                throw new RuntimeException(String.format("Illegal attempt to change %s's host ID from %s to %s",
+                                                         endpoint,
+                                                         storedId,
+                                                         hostId));
+            }
+
+            return;    // Already stored
+        }
+
+        endpointToHostIdMap.put(endpoint, hostId);
     }
 
     @Deprecated
