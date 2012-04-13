@@ -246,7 +246,8 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
             logger.debug("Setting token to {}", token);
         SystemTable.updateToken(token);
         tokenMetadata.updateNormalToken(token, FBUtilities.getBroadcastAddress());
-        Gossiper.instance.addLocalApplicationState(ApplicationState.STATUS, valueFactory.normal(getLocalToken()));
+        Gossiper.instance.addLocalApplicationState(ApplicationState.STATUS,
+                                                   valueFactory.normal(getLocalToken(), SystemTable.getLocalHostId()));
         setMode(Mode.NORMAL, false);
     }
 
@@ -1144,6 +1145,13 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
             tokenMetadata.removeFromMoving(endpoint);
 
         calculatePendingRanges();
+
+        // Add host ID on first jump to state normal.
+        if ((!tokenMetadata.isMember(endpoint)) && (Gossiper.instance.getVersion(endpoint) >= MessagingService.VERSION_12))
+        {
+            assert pieces.length >= 3;
+            tokenMetadata.maybeAddHostId(UUID.fromString(pieces[2]), endpoint);
+        }
     }
 
     /**

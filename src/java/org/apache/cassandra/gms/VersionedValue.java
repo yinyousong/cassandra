@@ -25,6 +25,7 @@ import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.io.IVersionedSerializer;
 import org.apache.cassandra.utils.FBUtilities;
+import org.apache.commons.lang.StringUtils;
 
 
 /**
@@ -102,9 +103,11 @@ public class VersionedValue implements Comparable<VersionedValue>
             return new VersionedValue(VersionedValue.STATUS_BOOTSTRAPPING + VersionedValue.DELIMITER + partitioner.getTokenFactory().toString(token));
         }
 
-        public VersionedValue normal(Token token)
+        public VersionedValue normal(Token token, UUID hostId)
         {
-            return new VersionedValue(VersionedValue.STATUS_NORMAL + VersionedValue.DELIMITER + partitioner.getTokenFactory().toString(token));
+            return new VersionedValue(versionString(VersionedValue.STATUS_NORMAL,
+                                                    partitioner.getTokenFactory().toString(token),
+                                                    hostId.toString()));
         }
 
         public VersionedValue load(double load)
@@ -182,6 +185,11 @@ public class VersionedValue implements Comparable<VersionedValue>
         public VersionedValue severity(double value)
         {
             return new VersionedValue(String.valueOf(value));
+        }
+
+        private String versionString(String...args)
+        {
+            return StringUtils.join(args, VersionedValue.DELIMITER);
         }
     }
 
