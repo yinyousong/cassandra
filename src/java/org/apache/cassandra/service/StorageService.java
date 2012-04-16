@@ -1110,7 +1110,17 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
     private void handleStateNormal(InetAddress endpoint, String[] pieces)
     {
         assert pieces.length >= 2;
-        Token token = getPartitioner().getTokenFactory().fromString(pieces[1]);
+
+        int tokensPos;
+        if (Gossiper.instance.getVersion(endpoint) >= MessagingService.VERSION_12)
+        {
+            assert pieces.length >= 3;
+            tokensPos = 2;
+        }
+        else
+            tokensPos = 1;
+
+        Token token = getPartitioner().getTokenFactory().fromString(pieces[tokensPos]);
 
         if (logger.isDebugEnabled())
             logger.debug("Node " + endpoint + " state normal, token " + token);
@@ -1155,10 +1165,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
 
         // Add host ID on first jump to state normal.
         if ((!tokenMetadata.isMember(endpoint)) && (Gossiper.instance.getVersion(endpoint) >= MessagingService.VERSION_12))
-        {
-            assert pieces.length >= 3;
-            tokenMetadata.maybeAddHostId(UUID.fromString(pieces[2]), endpoint);
-        }
+            tokenMetadata.maybeAddHostId(UUID.fromString(pieces[1]), endpoint);
     }
 
     /**
