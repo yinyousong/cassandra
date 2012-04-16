@@ -106,8 +106,8 @@ public class VersionedValue implements Comparable<VersionedValue>
         public VersionedValue normal(Token token, UUID hostId)
         {
             return new VersionedValue(versionString(VersionedValue.STATUS_NORMAL,
-                                                    partitioner.getTokenFactory().toString(token),
-                                                    hostId.toString()));
+                                                    hostId.toString(),
+                                                    partitioner.getTokenFactory().toString(token)));
         }
 
         public VersionedValue load(double load)
