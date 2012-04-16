@@ -307,6 +307,7 @@ public class TokenMetadata
             bootstrapTokens.inverse().remove(endpoint);
             tokenToEndpointMap.inverse().remove(endpoint);
             leavingEndpoints.remove(endpoint);
+            endpointToHostIdMap.remove(endpoint);
             sortedTokens = sortTokens();
             invalidateCaches();
         }
