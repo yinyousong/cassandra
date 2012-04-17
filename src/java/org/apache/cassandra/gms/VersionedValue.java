@@ -24,6 +24,7 @@ import java.util.UUID;
 import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.io.IVersionedSerializer;
+import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.commons.lang.StringUtils;
 
@@ -87,6 +88,11 @@ public class VersionedValue implements Comparable<VersionedValue>
     public String toString()
     {
         return "Value(" + value + "," + version + ")";
+    }
+
+    private static String versionString(String...args)
+    {
+        return StringUtils.join(args, VersionedValue.DELIMITER);
     }
 
     public static class VersionedValueFactory
@@ -186,18 +192,25 @@ public class VersionedValue implements Comparable<VersionedValue>
         {
             return new VersionedValue(String.valueOf(value));
         }
-
-        private String versionString(String...args)
-        {
-            return StringUtils.join(args, VersionedValue.DELIMITER);
-        }
     }
 
     private static class VersionedValueSerializer implements IVersionedSerializer<VersionedValue>
     {
         public void serialize(VersionedValue value, DataOutput dos, int version) throws IOException
         {
-            dos.writeUTF(value.value);
+            String outValue = value.value;
+
+            if (version < MessagingService.VERSION_12)
+            {
+                String[] pieces = value.value.split(DELIMITER_STR, -1);
+                if (pieces[0] == STATUS_NORMAL)
+                {
+                    assert pieces.length >= 3;
+                    outValue = versionString(STATUS_NORMAL, pieces[2]);
+                }
+            }
+
+            dos.writeUTF(outValue);
             dos.writeInt(value.version);
         }
 
