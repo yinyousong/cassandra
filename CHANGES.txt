@@ -8,6 +8,8 @@
 
 
 1.1.1-dev
+ * optimize cleanup to drop entire sstables where possible (CASSANDRA-4079)
+ * optimize truncate when autosnapshot is disabled (CASSANDRA-4153)
  * add support for commitlog archiving and point-in-time recovery
    (CASSANDRA-3647)
  * update caches to use byte[] keys to reduce memory overhead (CASSANDRA-3966)
@@ -20,6 +22,8 @@
  * Move CfDef and KsDef validation out of thrift (CASSANDRA-4037)
 
 1.1-dev
+ * (Hadoop) fix wide row iteration when last row read was deleted
+   (CASSANDRA-4154)
  * fix read_repair_chance to really default to 0.1 in the cli (CASSANDRA-4114)
  * Adds caching and bloomFilterFpChange to CQL options (CASSANDRA-4042)
  * Adds posibility to autoconfigure size of the KeyCache (CASSANDRA-4087)
@@ -35,7 +39,7 @@
  * Move CfDef and KsDef validation out of thrift (CASSANDRA-4037)
  * Fix get_paged_slice (CASSANDRA-4136)
  * CQL3: Support slice with exclusive start and stop (CASSANDRA-3785)
-Merged from 1.0:
+ * support PropertyFileSnitch in bulk loader (CASSANDRA-4145)
  * add auto_snapshot option allowing disabling snapshot before drop/truncate
    (CASSANDRA-3710)
  * allow short snitch names (CASSANDRA-4130)
@@ -75,12 +79,6 @@ Merged from 1.0:
 
 
 1.0.9
-=======
- * (CLI) properly handle quotes in create/update keyspace commands (CASSANDRA-4129)
-
-
-1.0.9
->>>>>>> cassandra-1.0
  * improve index sampling performance (CASSANDRA-4023)
  * always compact away deleted hints immediately after handoff (CASSANDRA-3955)
  * delete hints from dropped ColumnFamilies on handoff instead of
