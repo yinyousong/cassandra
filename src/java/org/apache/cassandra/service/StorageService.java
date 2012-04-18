@@ -547,6 +547,9 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         logger.info("Starting up server gossip");
         joined = true;
 
+        // Seed the host ID-to-endpoint map with our own ID.
+        getTokenMetadata().maybeAddHostId(SystemTable.getLocalHostId(), FBUtilities.getBroadcastAddress());
+
         // have to start the gossip service before we can see any info on other nodes.  this is necessary
         // for bootstrap to get the load info it needs.
         // (we won't be part of the storage ring though until we add a nodeId to our state, below.)
@@ -1002,6 +1005,12 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         return mapString;
     }
 
+    public String getHostId(String address) throws UnknownHostException
+    {
+        InetAddress endpoint = InetAddress.getByName(address);
+        return (endpoint == null) ? "unknown" : getTokenMetadata().getHostId(endpoint).toString();
+    }
+
     /**
      * Construct the range to endpoint mapping based on the true view
      * of the world.
@@ -1204,8 +1213,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
 
         calculatePendingRanges();
 
-        // Add host ID on first jump to state normal.
-        if ((!tokenMetadata.isMember(endpoint)) && (Gossiper.instance.getVersion(endpoint) >= MessagingService.VERSION_12))
+        if (Gossiper.instance.getVersion(endpoint) >= MessagingService.VERSION_12)
             tokenMetadata.maybeAddHostId(UUID.fromString(pieces[1]), endpoint);
     }
 
