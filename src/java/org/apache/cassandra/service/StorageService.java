@@ -1170,8 +1170,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
 
         calculatePendingRanges();
 
-        // Add host ID on first jump to state normal.
-        if ((!tokenMetadata.isMember(endpoint)) && (Gossiper.instance.getVersion(endpoint) >= MessagingService.VERSION_12))
+        if (Gossiper.instance.getVersion(endpoint) >= MessagingService.VERSION_12)
             tokenMetadata.maybeAddHostId(UUID.fromString(pieces[1]), endpoint);
     }
 
