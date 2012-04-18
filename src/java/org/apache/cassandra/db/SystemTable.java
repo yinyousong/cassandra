@@ -453,6 +453,8 @@ public class SystemTable
         hostId = UUID.randomUUID();
         long now = FBUtilities.timestampMicros();
 
+        logger.warn("No host ID found, created {} (Note: This should happen exactly once per node).", hostId);
+
         cf = ColumnFamily.create(Table.SYSTEM_TABLE, HOST_ID_CF);
         cf.addColumn(new Column(ByteBuffer.wrap(UUIDGen.decompose(hostId)), ByteBufferUtil.bytes(now), now));
 
