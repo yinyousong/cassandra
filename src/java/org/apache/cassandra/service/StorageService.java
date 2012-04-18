@@ -534,6 +534,8 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         logger.info("Starting up server gossip");
         joined = true;
 
+        // Seed the host ID-to-endpoint map with our own ID.
+        getTokenMetadata().maybeAddHostId(SystemTable.getLocalHostId(), FBUtilities.getBroadcastAddress());
 
         // have to start the gossip service before we can see any info on other nodes.  this is necessary
         // for bootstrap to get the load info it needs.
