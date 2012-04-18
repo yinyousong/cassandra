@@ -975,6 +975,12 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         return mapString;
     }
 
+    public String getHostId(String address) throws UnknownHostException
+    {
+        InetAddress endpoint = InetAddress.getByName(address);
+        return (endpoint == null) ? "unknown" : getTokenMetadata().getHostId(endpoint).toString();
+    }
+
     /**
      * Construct the range to endpoint mapping based on the true view
      * of the world.
@@ -1164,8 +1170,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
 
         calculatePendingRanges();
 
-        // Add host ID on first jump to state normal.
-        if ((!tokenMetadata.isMember(endpoint)) && (Gossiper.instance.getVersion(endpoint) >= MessagingService.VERSION_12))
+        if (Gossiper.instance.getVersion(endpoint) >= MessagingService.VERSION_12)
             tokenMetadata.maybeAddHostId(UUID.fromString(pieces[1]), endpoint);
     }
 
