@@ -975,6 +975,12 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         return mapString;
     }
 
+    public String getHostId(String address) throws UnknownHostException
+    {
+        InetAddress endpoint = InetAddress.getByName(address);
+        return (endpoint == null) ? "unknown" : getTokenMetadata().getHostId(endpoint).toString();
+    }
+
     /**
      * Construct the range to endpoint mapping based on the true view
      * of the world.
