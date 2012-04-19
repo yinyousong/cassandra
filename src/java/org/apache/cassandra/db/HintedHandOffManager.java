@@ -164,9 +164,9 @@ public class HintedHandOffManager implements HintedHandOffManagerMBean
     {
         if (!StorageService.instance.getTokenMetadata().isMember(endpoint))
             return;
-        Token<?> token = StorageService.instance.getTokenMetadata().getToken(endpoint);
-        ByteBuffer tokenBytes = StorageService.getPartitioner().getTokenFactory().toByteArray(token);
-        final RowMutation rm = new RowMutation(Table.SYSTEM_TABLE, tokenBytes);
+        UUID hostId = StorageService.instance.getTokenMetadata().getHostId(endpoint);
+        ByteBuffer hostIdBytes = ByteBuffer.wrap(UUIDGen.decompose(hostId));
+        final RowMutation rm = new RowMutation(Table.SYSTEM_TABLE, hostIdBytes);
         rm.delete(new QueryPath(HINTS_CF), System.currentTimeMillis());
 
         // execute asynchronously to avoid blocking caller (which may be processing gossip)
