@@ -705,6 +705,7 @@ public class TokenMetadata
         tokenToEndpointMap.clear();
         leavingEndpoints.clear();
         pendingRanges.clear();
+        endpointToHostIdMap.clear();
         invalidateCaches();
     }
 
