@@ -51,6 +51,8 @@ import static org.junit.Assert.assertTrue;
 
 public class Util
 {
+    private static List<UUID> hostIdPool = new ArrayList<UUID>();
+
     public static DecoratedKey dk(String key)
     {
         return StorageService.getPartitioner().decorateKey(ByteBufferUtil.bytes(key));
@@ -207,11 +209,15 @@ public class Util
                                    List<Token> keyTokens, List<InetAddress> hosts, List<UUID> hostIds, int howMany)
         throws UnknownHostException
     {
+        // Expand pool of host IDs as necessary
+        for (int i = hostIdPool.size(); i < howMany; i++)
+            hostIdPool.add(UUID.randomUUID());
+
         for (int i=0; i<howMany; i++)
         {
             endpointTokens.add(new BigIntegerToken(String.valueOf(10 * i)));
             keyTokens.add(new BigIntegerToken(String.valueOf(10 * i + 5)));
-            hostIds.add(UUID.randomUUID());
+            hostIds.add(hostIdPool.get(i));
         }
 
         for (int i=0; i<endpointTokens.size(); i++)
