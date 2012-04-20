@@ -18,6 +18,7 @@
 package org.apache.cassandra.locator;
 
 import java.net.InetAddress;
+import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -29,6 +30,7 @@ import com.google.common.collect.*;
 
 import org.apache.cassandra.utils.BiMultiValMap;
 import org.apache.cassandra.utils.Pair;
+import org.apache.cassandra.utils.SortedBiMultiValMap;
 import org.apache.commons.lang.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -83,11 +85,19 @@ public class TokenMetadata
 
     /* Use this lock for manipulating the token map */
     private final ReadWriteLock lock = new ReentrantReadWriteLock(true);
-    private ArrayList<Token> sortedTokens;
 
     /* list of subscribers that are notified when the tokenToEndpointMap changed */
     private final CopyOnWriteArrayList<AbstractReplicationStrategy> subscribers = new CopyOnWriteArrayList<AbstractReplicationStrategy>();
 
+    private final Comparator<InetAddress> inetaddressCmp = new Comparator<InetAddress>()
+    {
+        @Override
+        public int compare(InetAddress o1, InetAddress o2)
+        {
+            return ByteBuffer.wrap(o1.getAddress()).compareTo(ByteBuffer.wrap(o2.getAddress()));
+        }
+    };
+    
     public TokenMetadata()
     {
         this(null);
@@ -96,17 +106,9 @@ public class TokenMetadata
     public TokenMetadata(BiMultiValMap<Token, InetAddress> tokenToEndpointMap)
     {
         if (tokenToEndpointMap == null)
-            tokenToEndpointMap = new BiMultiValMap<Token, InetAddress>();
+            tokenToEndpointMap = SortedBiMultiValMap.<Token, InetAddress>create(null, inetaddressCmp);
         this.tokenToEndpointMap = tokenToEndpointMap;
         endpointToHostIdMap = HashBiMap.create();
-        sortedTokens = sortTokens();
-    }
-
-    private ArrayList<Token> sortTokens()
-    {
-        ArrayList<Token> tokens = new ArrayList<Token>(tokenToEndpointMap.keySet());
-        Collections.sort(tokens);
-        return tokens;
     }
 
     /** @return the number of nodes bootstrapping into source's primary range */
@@ -156,7 +158,6 @@ public class TokenMetadata
         lock.writeLock().lock();
         try
         {
-            boolean shouldSortTokens = false;
             Set<InetAddress> resetEndpoints = new HashSet<InetAddress>();
             for (Pair<Token, InetAddress> tokenEndpointPair : tokenPairs)
             {
@@ -179,13 +180,9 @@ public class TokenMetadata
                 {
                     if (prev != null)
                         logger.warn("Token " + token + " changing ownership from " + prev + " to " + endpoint);
-                    shouldSortTokens = true;
                 }
                 // TODO: check invalidate caches
             }
-
-            if (shouldSortTokens)
-                sortedTokens = sortTokens();
         }
         finally
         {
@@ -343,7 +340,6 @@ public class TokenMetadata
             tokenToEndpointMap.removeValue(endpoint);
             leavingEndpoints.remove(endpoint);
             endpointToHostIdMap.remove(endpoint);
-            sortedTokens = sortTokens();
             invalidateCaches();
         }
         finally
@@ -463,7 +459,7 @@ public class TokenMetadata
         lock.readLock().lock();
         try
         {
-            return new TokenMetadata(new BiMultiValMap<Token, InetAddress>(tokenToEndpointMap));
+            return new TokenMetadata(SortedBiMultiValMap.<Token, InetAddress>create(tokenToEndpointMap, null, inetaddressCmp));
         }
         finally
         {
@@ -556,7 +552,7 @@ public class TokenMetadata
         lock.readLock().lock();
         try
         {
-            return sortedTokens;
+            return new ArrayList<Token>(tokenToEndpointMap.keySet());
         }
         finally
         {
