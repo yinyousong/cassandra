@@ -1139,7 +1139,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
             else tokenPos = 1;
 
         Collection<Token> tokens = new ArrayList<Token>();
-        for (int i = tokensPos; i < pieces.length; ++i)
+        for (int i = tokenPos; i < pieces.length; ++i)
             tokens.add(getPartitioner().getTokenFactory().fromString(pieces[i]));
 
         if (logger.isDebugEnabled())
