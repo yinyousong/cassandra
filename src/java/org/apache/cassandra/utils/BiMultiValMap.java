@@ -19,15 +19,24 @@ import com.google.common.collect.Multimaps;
  */
 public class BiMultiValMap<K, V> implements Map<K, V>
 {
-    private final Map<K, V> forwardMap = new HashMap<K, V>();
-    private final Multimap<V, K> reverseMap = Multimaps.synchronizedMultimap(HashMultimap.<V, K>create());
+    protected final Map<K, V> forwardMap;
+    protected final Multimap<V, K> reverseMap;
 
     public BiMultiValMap()
     {
+        this.forwardMap = new HashMap<K, V>();
+        this.reverseMap = Multimaps.synchronizedMultimap(HashMultimap.<V, K>create());
+    }
+
+    protected BiMultiValMap(Map<K, V> forwardMap, Multimap<V, K> reverseMap)
+    {
+        this.forwardMap = forwardMap;
+        this.reverseMap = reverseMap;
     }
 
     public BiMultiValMap(BiMultiValMap<K, V> map)
     {
+        this();
         forwardMap.putAll(map);
         reverseMap.putAll(map.inverse());
     }

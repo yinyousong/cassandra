@@ -18,6 +18,7 @@
 package org.apache.cassandra.locator;
 
 import java.net.InetAddress;
+import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -29,6 +30,7 @@ import com.google.common.collect.*;
 
 import org.apache.cassandra.utils.BiMultiValMap;
 import org.apache.cassandra.utils.Pair;
+import org.apache.cassandra.utils.SortedBiMultiValMap;
 import org.apache.commons.lang.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -88,6 +90,15 @@ public class TokenMetadata
     /* list of subscribers that are notified when the tokenToEndpointMap changed */
     private final CopyOnWriteArrayList<AbstractReplicationStrategy> subscribers = new CopyOnWriteArrayList<AbstractReplicationStrategy>();
 
+    private final Comparator<InetAddress> inetaddressCmp = new Comparator<InetAddress>()
+    {
+        @Override
+        public int compare(InetAddress o1, InetAddress o2)
+        {
+            return ByteBuffer.wrap(o1.getAddress()).compareTo(ByteBuffer.wrap(o2.getAddress()));
+        }
+    };
+    
     public TokenMetadata()
     {
         this(null);
@@ -96,7 +107,7 @@ public class TokenMetadata
     public TokenMetadata(BiMultiValMap<Token, InetAddress> tokenToEndpointMap)
     {
         if (tokenToEndpointMap == null)
-            tokenToEndpointMap = new BiMultiValMap<Token, InetAddress>();
+            tokenToEndpointMap = SortedBiMultiValMap.<Token, InetAddress>create(null, inetaddressCmp);
         this.tokenToEndpointMap = tokenToEndpointMap;
         endpointToHostIdMap = HashBiMap.create();
         sortedTokens = sortTokens();
@@ -463,7 +474,7 @@ public class TokenMetadata
         lock.readLock().lock();
         try
         {
-            return new TokenMetadata(new BiMultiValMap<Token, InetAddress>(tokenToEndpointMap));
+            return new TokenMetadata(SortedBiMultiValMap.<Token, InetAddress>create(tokenToEndpointMap, null, inetaddressCmp));
         }
         finally
         {
