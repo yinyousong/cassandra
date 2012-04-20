@@ -85,7 +85,6 @@ public class TokenMetadata
 
     /* Use this lock for manipulating the token map */
     private final ReadWriteLock lock = new ReentrantReadWriteLock(true);
-    private ArrayList<Token> sortedTokens;
 
     /* list of subscribers that are notified when the tokenToEndpointMap changed */
     private final CopyOnWriteArrayList<AbstractReplicationStrategy> subscribers = new CopyOnWriteArrayList<AbstractReplicationStrategy>();
@@ -110,14 +109,6 @@ public class TokenMetadata
             tokenToEndpointMap = SortedBiMultiValMap.<Token, InetAddress>create(null, inetaddressCmp);
         this.tokenToEndpointMap = tokenToEndpointMap;
         endpointToHostIdMap = HashBiMap.create();
-        sortedTokens = sortTokens();
-    }
-
-    private ArrayList<Token> sortTokens()
-    {
-        ArrayList<Token> tokens = new ArrayList<Token>(tokenToEndpointMap.keySet());
-        Collections.sort(tokens);
-        return tokens;
     }
 
     /** @return the number of nodes bootstrapping into source's primary range */
@@ -167,7 +158,6 @@ public class TokenMetadata
         lock.writeLock().lock();
         try
         {
-            boolean shouldSortTokens = false;
             Set<InetAddress> resetEndpoints = new HashSet<InetAddress>();
             for (Pair<Token, InetAddress> tokenEndpointPair : tokenPairs)
             {
@@ -190,13 +180,9 @@ public class TokenMetadata
                 {
                     if (prev != null)
                         logger.warn("Token " + token + " changing ownership from " + prev + " to " + endpoint);
-                    shouldSortTokens = true;
                 }
                 // TODO: check invalidate caches
             }
-
-            if (shouldSortTokens)
-                sortedTokens = sortTokens();
         }
         finally
         {
@@ -354,7 +340,6 @@ public class TokenMetadata
             tokenToEndpointMap.removeValue(endpoint);
             leavingEndpoints.remove(endpoint);
             endpointToHostIdMap.remove(endpoint);
-            sortedTokens = sortTokens();
             invalidateCaches();
         }
         finally
@@ -567,7 +552,7 @@ public class TokenMetadata
         lock.readLock().lock();
         try
         {
-            return sortedTokens;
+            return new ArrayList<Token>(tokenToEndpointMap.keySet());
         }
         finally
         {
