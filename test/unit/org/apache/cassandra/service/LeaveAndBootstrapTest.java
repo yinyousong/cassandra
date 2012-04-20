@@ -320,7 +320,7 @@ public class LeaveAndBootstrapTest
                 valueFactory.left(endpointTokens.get(LEAVING[0]), Gossiper.computeExpireTime()));
         ss.onChange(hosts.get(LEAVING[2]), ApplicationState.STATUS,
                 valueFactory.left(endpointTokens.get(LEAVING[2]), Gossiper.computeExpireTime()));
-        ss.onChange(boot1, ApplicationState.STATUS, valueFactory.normal(keyTokens.get(5), hostIds.get(5)));
+        ss.onChange(boot1, ApplicationState.STATUS, valueFactory.normal(keyTokens.get(5), UUID.randomUUID()));
 
         // adjust precalcuated results.  this changes what the epected endpoints are.
         expectedEndpoints.get("Keyspace1").get(new BigIntegerToken("55")).removeAll(makeAddrs("127.0.0.7", "127.0.0.8"));
@@ -521,7 +521,7 @@ public class LeaveAndBootstrapTest
         ss.onChange(hosts.get(2), ApplicationState.STATUS, valueFactory.leaving(keyTokens.get(2)));
         ss.onChange(hosts.get(2), ApplicationState.STATUS,
                 valueFactory.left(keyTokens.get(2), Gossiper.computeExpireTime()));
-        ss.onChange(hosts.get(2), ApplicationState.STATUS, valueFactory.normal(keyTokens.get(4), hostIds.get(4)));
+        ss.onChange(hosts.get(2), ApplicationState.STATUS, valueFactory.normal(keyTokens.get(4), hostIds.get(2)));
 
         assertTrue(tmd.getBootstrapTokens().isEmpty());
         assertTrue(tmd.getLeavingEndpoints().isEmpty());
