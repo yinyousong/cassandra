@@ -109,18 +109,19 @@ public class VersionedValue implements Comparable<VersionedValue>
         }
 
         @Deprecated
-        public VersionedValue bootstrapping(Token token)
+        public VersionedValue bootstrapping(Token token, UUID hostId)
         {
-            return bootstrapping(Collections.singleton(token));
+            return bootstrapping(Collections.singleton(token), hostId);
         }
 
-        public VersionedValue bootstrapping(Collection<Token> tokens)
+        public VersionedValue bootstrapping(Collection<Token> tokens, UUID hostId)
         {
             List<String> tokenString = new ArrayList<String>();
             for (Token token : tokens)
                 tokenString.add(partitioner.getTokenFactory().toString(token));
-            return new VersionedValue(VersionedValue.STATUS_BOOTSTRAPPING + VersionedValue.DELIMITER + 
-                    StringUtils.join(tokenString, VersionedValue.DELIMITER));
+            return new VersionedValue(versionString(VersionedValue.STATUS_BOOTSTRAPPING,
+                                                    hostId.toString(),
+                                                    StringUtils.join(tokenString, VersionedValue.DELIMITER)));
         }
 
         @Deprecated
@@ -226,10 +227,10 @@ public class VersionedValue implements Comparable<VersionedValue>
             if (version < MessagingService.VERSION_12)
             {
                 String[] pieces = value.value.split(DELIMITER_STR, -1);
-                if (pieces[0] == STATUS_NORMAL)
+                if ((pieces[0] == STATUS_NORMAL) || pieces[0] == STATUS_BOOTSTRAPPING)
                 {
                     assert pieces.length >= 3;
-                    outValue = versionString(STATUS_NORMAL, pieces[2]);
+                    outValue = versionString(pieces[0], pieces[2]);
                 }
             }
 
