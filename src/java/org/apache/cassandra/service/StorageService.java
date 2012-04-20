@@ -769,7 +769,8 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         if (null == DatabaseDescriptor.getReplaceToken())
         {
             // if not an existing token then bootstrap
-            Gossiper.instance.addLocalApplicationState(ApplicationState.STATUS, valueFactory.bootstrapping(token));
+            Gossiper.instance.addLocalApplicationState(ApplicationState.STATUS,
+                                                       valueFactory.bootstrapping(token, SystemTable.getLocalHostId()));
             setMode(Mode.JOINING, "sleeping " + RING_DELAY + " ms for pending range setup", true);
             try
             {
@@ -1090,7 +1091,19 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
     private void handleStateBootstrap(InetAddress endpoint, String[] pieces)
     {
         assert pieces.length >= 2;
-        Token token = getPartitioner().getTokenFactory().fromString(pieces[1]);
+
+        // Parse versioned values according to end-point version:
+        //   versions  < 1.2 .....: STATUS,TOKEN
+        //   versions >= 1.2 .....: STATUS,HOST_ID,TOKEN,TOKEN,...
+        int tokenPos;
+        if (Gossiper.instance.getVersion(endpoint) >= MessagingService.VERSION_12)
+        {
+            assert pieces.length >= 3;
+            tokenPos = 2;
+        }
+            else tokenPos = 1;
+
+        Token token = getPartitioner().getTokenFactory().fromString(pieces[tokenPos]);
 
         if (logger.isDebugEnabled())
             logger.debug("Node " + endpoint + " state bootstrapping, token " + token);
@@ -1112,6 +1125,9 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
 
         tokenMetadata.addBootstrapToken(token, endpoint);
         calculatePendingRanges();
+
+        if (Gossiper.instance.getVersion(endpoint) >= MessagingService.VERSION_12)
+            tokenMetadata.maybeAddHostId(UUID.fromString(pieces[1]), endpoint);
     }
 
     /**
@@ -1125,6 +1141,9 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
     {
         assert pieces.length >= 2;
 
+        // Parse versioned values according to end-point version:
+        //   versions  < 1.2 .....: STATUS,TOKEN
+        //   versions >= 1.2 .....: STATUS,HOST_ID,TOKEN,TOKEN,...
         int tokensPos;
         if (Gossiper.instance.getVersion(endpoint) >= MessagingService.VERSION_12)
         {
