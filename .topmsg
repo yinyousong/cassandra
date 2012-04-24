@@ -1,7 +1,7 @@
 From: Eric Evans <eevans@apache.org>
-Subject: [PATCH] p/4120/03_reference_node_by_hostid
+Subject: [PATCH] p/4120/04_remove_node_by_hostid
 
-Reference end-points using unique host ID.  See CASSANDRA-4120
-(https://issues.apache.org/jira/browse/CASSANDRA-4120).
+Refactors StorageService.removeToken() (now removeNode()) to
+reference nodes by host ID, not token.
 
 Signed-off-by: Eric Evans <eevans@apache.org>
