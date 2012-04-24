@@ -239,6 +239,12 @@ public class TokenMetadata
         return endpointToHostIdMap.get(endpoint);
     }
 
+    /** Return the end-point for a unique host ID */
+    public InetAddress getEndpointForHostId(UUID hostId)
+    {
+        return endpointToHostIdMap.inverse().get(hostId);
+    }
+
     @Deprecated
     public void addBootstrapToken(Token token, InetAddress endpoint)
     {
