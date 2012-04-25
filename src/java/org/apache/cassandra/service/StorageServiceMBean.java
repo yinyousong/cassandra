@@ -158,6 +158,9 @@ public interface StorageServiceMBean
     /** Retrieve a host UUID for a given endpoint address */
     public String getHostId(String address) throws UnknownHostException;
 
+    /** Retrieve this hosts unique ID */
+    public String getLocalHostId();
+
     /**
      * Numeric load value.
      */
