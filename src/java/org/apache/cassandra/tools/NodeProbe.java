@@ -313,6 +313,11 @@ public class NodeProbe
         return ssProxy.getToken();
     }
 
+    public String getLocalHostId()
+    {
+        return ssProxy.getLocalHostId();
+    }
+
     public String getLoadString()
     {
         return ssProxy.getLoadString();

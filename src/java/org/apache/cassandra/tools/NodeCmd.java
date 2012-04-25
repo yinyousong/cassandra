@@ -315,6 +315,7 @@ public class NodeCmd
     {
         boolean gossipInitialized = probe.isInitialized();
         outs.printf("%-17s: %s%n", "Token", probe.getToken());
+        outs.printf("%-17s: %s%n", "ID", probe.getLocalHostId());
         outs.printf("%-17s: %s%n", "Gossip active", gossipInitialized);
         outs.printf("%-17s: %s%n", "Load", probe.getLoadString());
         if (gossipInitialized)
