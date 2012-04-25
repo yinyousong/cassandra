@@ -989,6 +989,18 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         return (endpoint == null) ? "unknown" : getTokenMetadata().getHostId(endpoint).toString();
     }
 
+    public String getLocalHostId()
+    {
+        try
+        {
+            return getHostId(FBUtilities.getBroadcastAddress().getHostAddress());
+        }
+        catch (UnknownHostException e)
+        {
+            throw new RuntimeException("Unable to resolve the local address", e);
+        }
+    }
+
     /**
      * Construct the range to endpoint mapping based on the true view
      * of the world.
