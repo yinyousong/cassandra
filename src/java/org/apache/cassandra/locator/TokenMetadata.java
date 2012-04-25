@@ -33,6 +33,7 @@ import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
+import org.apache.cassandra.gms.FailureDetector;
 import org.apache.cassandra.service.StorageService;
 
 public class TokenMetadata
@@ -188,32 +189,33 @@ public class TokenMetadata
         assert hostId != null;
         assert endpoint != null;
 
+        // XXX: It's entirely possible all of this validation is the result of over-thinking
         InetAddress storedEp = endpointToHostIdMap.inverse().get(hostId);
         if (storedEp != null)
         {
-            if (!storedEp.equals(endpoint))
+            if (storedEp.equals(endpoint))
+                return;
+            else if (FailureDetector.instance.isAlive(storedEp))
             {
-                throw new RuntimeException(String.format("Host ID collision between %s and %s (id=%s)",
+                throw new RuntimeException(String.format("Host ID collision between active endpoint %s and %s (id=%s)",
                                                          storedEp,
                                                          endpoint,
                                                          hostId));
             }
-
-            return;    // Already stored
         }
 
         UUID storedId = endpointToHostIdMap.get(endpoint);
         if (storedId != null)
         {
-            if (!storedId.equals(hostId))
+            if (storedId.equals(hostId))
+                return;
+            else
             {
                 throw new RuntimeException(String.format("Illegal attempt to change %s's host ID from %s to %s",
                                                          endpoint,
                                                          storedId,
                                                          hostId));
             }
-
-            return;    // Already stored
         }
 
         endpointToHostIdMap.put(endpoint, hostId);
