@@ -218,7 +218,7 @@ public class TokenMetadata
             }
         }
 
-        endpointToHostIdMap.put(endpoint, hostId);
+        endpointToHostIdMap.forcePut(endpoint, hostId);
     }
 
     /** Return the unique host ID for an end-point. */
