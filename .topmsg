@@ -1,7 +1,8 @@
 From: Eric Evans <eevans@apache.org>
-Subject: [PATCH] p/4120/01_create_store_host_uuid
+Subject: [PATCH] p/4120/02_uuid_in_application_status
 
-Reference hosts by UUID not Token. See CASSANDRA-4120
+Gossip host ID for bootstrapping and normal status; Maintain a mapping of
+endpoint to ID.  See CASSANDRA-4120
 (https://issues.apache.org/jira/browse/CASSANDRA-4120).
 
 Signed-off-by: Eric Evans <eevans@apache.org>
