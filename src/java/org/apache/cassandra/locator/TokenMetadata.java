@@ -198,18 +198,15 @@ public class TokenMetadata
      * @param hostId
      * @param endpoint
      */
-    public void maybeAddHostId(UUID hostId, InetAddress endpoint)
+    public void updateHostId(UUID hostId, InetAddress endpoint)
     {
         assert hostId != null;
         assert endpoint != null;
 
-        // XXX: It's entirely possible all of this validation is the result of over-thinking
         InetAddress storedEp = endpointToHostIdMap.inverse().get(hostId);
         if (storedEp != null)
         {
-            if (storedEp.equals(endpoint))
-                return;
-            else if (FailureDetector.instance.isAlive(storedEp))
+            if (!storedEp.equals(endpoint) && (FailureDetector.instance.isAlive(storedEp)))
             {
                 throw new RuntimeException(String.format("Host ID collision between active endpoint %s and %s (id=%s)",
                                                          storedEp,
@@ -219,18 +216,8 @@ public class TokenMetadata
         }
 
         UUID storedId = endpointToHostIdMap.get(endpoint);
-        if (storedId != null)
-        {
-            if (storedId.equals(hostId))
-                return;
-            else
-            {
-                throw new RuntimeException(String.format("Illegal attempt to change %s's host ID from %s to %s",
-                                                         endpoint,
-                                                         storedId,
-                                                         hostId));
-            }
-        }
+        if ((storedId != null) && (!storedId.equals(hostId)))
+            logger.warn("Changing {}'s host ID from {} to {}", new Object[] {endpoint, storedId, hostId});
 
         endpointToHostIdMap.forcePut(endpoint, hostId);
     }
