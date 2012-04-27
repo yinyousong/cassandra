@@ -9,6 +9,21 @@ upgrade, just in case you need to roll back to the previous version.
 by version X, but the inverse is not necessarily the case.)
 
 
+1.2
+===
+
+Upgrading
+---------
+    - The hints schema was changed from 1.1 to 1.2. Cassandra automatically
+      snapshots and then truncates the hints column family as part of
+      starting up 1.2 for the first time.
+    - Forced removal of a node from the cluster is now accomplished with the
+      `nodetool removenode <host ID>` command, (or with the corresponding
+      JMX operation).  This function is incompatible with the earlier
+      `nodetool removetoken` command, and attempts to force-remove nodes in
+      a mixed 1.1 (or lower) / 1.2 cluster, is not supported.
+
+
 1.1.1
 =====
 
