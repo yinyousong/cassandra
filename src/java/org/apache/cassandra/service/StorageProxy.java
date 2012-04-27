@@ -365,6 +365,8 @@ public class StorageProxy implements StorageProxyMBean
                 try
                 {
                     UUID hostId = StorageService.instance.getTokenMetadata().getHostId(target);
+                    if ((hostId == null) && (Gossiper.instance.getVersion(target) < MessagingService.VERSION_12))
+                        logger.info("Unable to store hint for host with missing ID, {} (old node?)", target.toString());
                     RowMutation hintedMutation = RowMutation.hintFor(mutation, ByteBuffer.wrap(UUIDGen.decompose(hostId)));
                     hintedMutation.apply();
 
