@@ -142,17 +142,25 @@ public class SystemTable
     /**
      * Record token being used by another node
      */
-    // TODO: updateTokens (multiple) with batch mutation
+    @Deprecated
     public static synchronized void updateToken(InetAddress ep, Token token)
+    {
+        updateTokens(ep, Arrays.asList(token));
+    }
+
+    public static synchronized void updateTokens(InetAddress ep, Collection<Token> tokens)
     {
         if (ep.equals(FBUtilities.getBroadcastAddress()))
         {
-            removeToken(token);
+            removeTokens(tokens);
             return;
         }
         IPartitioner p = StorageService.getPartitioner();
         ColumnFamily cf = ColumnFamily.create(Table.SYSTEM_TABLE, STATUS_CF);
-        cf.addColumn(new Column(p.getTokenFactory().toByteArray(token), ByteBuffer.wrap(ep.getAddress()), FBUtilities.timestampMicros()));
+        long timestampMicros = FBUtilities.timestampMicros();
+        for (Token token : tokens)
+            cf.addColumn(new Column(p.getTokenFactory().toByteArray(token), ByteBuffer.wrap(ep.getAddress()), timestampMicros));
+
         RowMutation rm = new RowMutation(Table.SYSTEM_TABLE, RING_KEY);
         rm.add(cf);
         try
@@ -169,11 +177,19 @@ public class SystemTable
     /**
      * Remove stored token being used by another node
      */
+    @Deprecated
     public static synchronized void removeToken(Token token)
+    {
+        removeTokens(Arrays.asList(token));
+    }
+
+    public static synchronized void removeTokens(Collection<Token> tokens)
     {
         IPartitioner p = StorageService.getPartitioner();
         RowMutation rm = new RowMutation(Table.SYSTEM_TABLE, RING_KEY);
-        rm.delete(new QueryPath(STATUS_CF, null, p.getTokenFactory().toByteArray(token)), FBUtilities.timestampMicros());
+        long timestampMicros = FBUtilities.timestampMicros();
+        for (Token token : tokens)
+            rm.delete(new QueryPath(STATUS_CF, null, p.getTokenFactory().toByteArray(token)), timestampMicros);
         try
         {
             rm.apply();

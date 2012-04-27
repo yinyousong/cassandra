@@ -1202,7 +1202,8 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
 
         // TODO: this logic needs to be thought through a little more carefully.
         // TODO: eg. what happens if only one of the tokens is already handled by a different endpoint but the rest aren't?
-        Set<Token> tokensToUpdate = new HashSet<Token>();
+        Set<Token> tokensToUpdateInMetadata = new HashSet<Token>();
+        Set<Token> tokensToUpdateInSystemTable = new HashSet<Token>();
         for (Token token : tokens)
         {
             // we don't want to update if this node is responsible for the token and it has a later startup time than endpoint.
@@ -1210,25 +1211,25 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
             if (currentOwner == null)
             {
                 logger.debug("New node " + endpoint + " at token " + token);
-                tokensToUpdate.add(token);
+                tokensToUpdateInMetadata.add(token);
                 if (!isClientMode)
-                    SystemTable.updateToken(endpoint, token);
+                    tokensToUpdateInSystemTable.add(token);
             }
             else if (endpoint.equals(currentOwner))
             {
                 // set state back to normal, since the node may have tried to leave, but failed and is now back up
                 // no need to persist, token/ip did not change
-                tokensToUpdate.add(token);
+                tokensToUpdateInMetadata.add(token);
             }
             else if (Gossiper.instance.compareEndpointStartup(endpoint, currentOwner) > 0)
             {
                 logger.info(String.format("Nodes %s and %s have the same token %s.  %s is the new owner",
                                            endpoint, currentOwner, token, endpoint));
-                tokensToUpdate.add(token);
+                tokensToUpdateInMetadata.add(token);
                 // TODO: we don't want to remove the whole endpoint
                 Gossiper.instance.removeEndpoint(currentOwner);
                 if (!isClientMode)
-                    SystemTable.updateToken(endpoint, token);
+                    tokensToUpdateInSystemTable.add(token);
             }
             else
             {
@@ -1237,7 +1238,8 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
             }
         }
 
-        tokenMetadata.updateNormalTokens(tokensToUpdate, endpoint);
+        tokenMetadata.updateNormalTokens(tokensToUpdateInMetadata, endpoint);
+        SystemTable.updateTokens(endpoint, tokensToUpdateInSystemTable);
 
         if (tokenMetadata.isMoving(endpoint)) // if endpoint was moving to a new token
             tokenMetadata.removeFromMoving(endpoint);
