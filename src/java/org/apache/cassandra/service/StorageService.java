@@ -1259,11 +1259,12 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
     private void handleStateLeaving(InetAddress endpoint, String[] pieces)
     {
         assert pieces.length >= 2;
-        String moveValue = pieces[1];
-        Token token = getPartitioner().getTokenFactory().fromString(moveValue);
+        Collection<Token> tokens = new ArrayList<Token>();
+        for (int i = 1; i < pieces.length; ++i)
+            tokens.add(getPartitioner().getTokenFactory().fromString(pieces[i]));
 
         if (logger.isDebugEnabled())
-            logger.debug("Node " + endpoint + " state leaving, token " + token);
+            logger.debug("Node " + endpoint + " state leaving, tokens " + tokens);
 
         // If the node is previously unknown or tokens do not match, update tokenmetadata to
         // have this node as 'normal' (it must have been using this token before the
@@ -1271,12 +1272,12 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         if (!tokenMetadata.isMember(endpoint))
         {
             logger.info("Node " + endpoint + " state jump to leaving");
-            tokenMetadata.updateNormalToken(token, endpoint);
+            tokenMetadata.updateNormalTokens(tokens, endpoint);
         }
-        else if (!tokenMetadata.getTokens(endpoint).contains(token))
+        else if (!tokenMetadata.getTokens(endpoint).containsAll(tokens))
         {
             logger.warn("Node " + endpoint + " 'leaving' token mismatch. Long network partition?");
-            tokenMetadata.updateNormalToken(token, endpoint);
+            tokenMetadata.updateNormalTokens(tokens, endpoint);
         }
 
         // at this point the endpoint is certainly a member with this token, so let's proceed
@@ -1294,12 +1295,21 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
     private void handleStateLeft(InetAddress endpoint, String[] pieces)
     {
         assert pieces.length >= 2;
-        Token token = getPartitioner().getTokenFactory().fromString(pieces[1]);
+        Collection<Token> tokens = null;
+        Integer version = Gossiper.instance.getVersion(endpoint);
+        if (version < MessagingService.VERSION_12)
+            tokens = Arrays.asList(getPartitioner().getTokenFactory().fromString(pieces[1]));
+        else
+        {
+            tokens = new ArrayList<Token>(pieces.length - 2);
+            for (int i = 2; i < pieces.length; ++i)
+                tokens.add(getPartitioner().getTokenFactory().fromString(pieces[i]));
+        }
 
         if (logger.isDebugEnabled())
-            logger.debug("Node " + endpoint + " state left, token " + token);
+            logger.debug("Node " + endpoint + " state left, tokens " + tokens);
 
-        excise(token, endpoint, extractExpireTime(pieces));
+        excise(tokens, endpoint, extractExpireTime(pieces, version));
     }
 
     /**
@@ -1351,7 +1361,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
 
             if (VersionedValue.REMOVED_TOKEN.equals(state))
             {
-                excise(removeToken, endpoint, extractExpireTime(pieces));
+                excise(removeToken, endpoint, extractExpireTime(pieces, Gossiper.instance.getVersion(endpoint)));
             }
             else if (VersionedValue.REMOVING_TOKEN.equals(state))
             {
@@ -1371,24 +1381,36 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         } // not a member, nothing to do
     }
 
+    @Deprecated
     private void excise(Token token, InetAddress endpoint)
+    {
+        excise(Arrays.asList(token), endpoint);
+    }
+
+    private void excise(Collection<Token> tokens, InetAddress endpoint)
     {
         HintedHandOffManager.instance.deleteHintsForEndpoint(endpoint);
         Gossiper.instance.removeEndpoint(endpoint);
         tokenMetadata.removeEndpoint(endpoint);
-        tokenMetadata.removeBootstrapToken(token);
+        tokenMetadata.removeBootstrapTokens(tokens);
         calculatePendingRanges();
         if (!isClientMode)
         {
-            logger.info("Removing token " + token + " for " + endpoint);
-            SystemTable.removeToken(token);
+            logger.info("Removing tokens " + tokens + " for " + endpoint);
+            SystemTable.removeTokens(tokens);
         }
     }
 
+    @Deprecated
     private void excise(Token token, InetAddress endpoint, long expireTime)
     {
+        excise(Arrays.asList(token), endpoint, expireTime);
+    }
+
+    private void excise(Collection<Token> tokens, InetAddress endpoint, long expireTime)
+    {
         addExpireTimeIfFound(endpoint, expireTime);
-        excise(token, endpoint);
+        excise(tokens, endpoint);
     }
 
     protected void addExpireTimeIfFound(InetAddress endpoint, long expireTime)
@@ -1399,14 +1421,21 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         }
     }
 
-    protected long extractExpireTime(String[] pieces)
+    protected long extractExpireTime(String[] pieces, int version)
     {
-        long expireTime = 0L;
-        if (pieces.length >= 3)
+        if (version < MessagingService.VERSION_12)
         {
-            expireTime = Long.parseLong(pieces[2]);
+            if (pieces.length >= 3)
+                return Long.parseLong(pieces[2]);
+            else
+                return 0L;
+        } else
+        {
+            if (VersionedValue.STATUS_LEFT.equals(pieces[0]))
+                return Long.parseLong(pieces[1]);
+            else
+                return Long.parseLong(pieces[2]);
         }
-        return expireTime;
     }
 
     /**
@@ -2374,7 +2403,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
      */
     private void startLeaving()
     {
-        Gossiper.instance.addLocalApplicationState(ApplicationState.STATUS, valueFactory.leaving(getLocalToken()));
+        Gossiper.instance.addLocalApplicationState(ApplicationState.STATUS, valueFactory.leaving(getLocalTokens()));
         tokenMetadata.addLeavingEndpoint(FBUtilities.getBroadcastAddress());
         calculatePendingRanges();
     }
@@ -2418,7 +2447,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         tokenMetadata.removeEndpoint(FBUtilities.getBroadcastAddress());
         calculatePendingRanges();
 
-        Gossiper.instance.addLocalApplicationState(ApplicationState.STATUS, valueFactory.left(getLocalToken(),Gossiper.computeExpireTime()));
+        Gossiper.instance.addLocalApplicationState(ApplicationState.STATUS, valueFactory.left(getLocalTokens(),Gossiper.computeExpireTime()));
         logger.info("Announcing that I have left the ring for " + RING_DELAY + "ms");
         try
         {
