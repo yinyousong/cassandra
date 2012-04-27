@@ -116,12 +116,9 @@ public class VersionedValue implements Comparable<VersionedValue>
 
         public VersionedValue bootstrapping(Collection<Token> tokens, UUID hostId)
         {
-            List<String> tokenString = new ArrayList<String>();
-            for (Token token : tokens)
-                tokenString.add(partitioner.getTokenFactory().toString(token));
             return new VersionedValue(versionString(VersionedValue.STATUS_BOOTSTRAPPING,
                                                     hostId.toString(),
-                                                    StringUtils.join(tokenString, VersionedValue.DELIMITER)));
+                                                    makeTokenString(tokens)));
         }
 
         @Deprecated
@@ -132,12 +129,17 @@ public class VersionedValue implements Comparable<VersionedValue>
 
         public VersionedValue normal(Collection<Token> tokens, UUID hostId)
         {
-            List<String> tokenString = new ArrayList<String>();
-            for (Token<?> token : tokens)
-                tokenString.add(partitioner.getTokenFactory().toString(token));
             return new VersionedValue(versionString(VersionedValue.STATUS_NORMAL,
                                                     hostId.toString(),
-                                                    StringUtils.join(tokenString, VersionedValue.DELIMITER)));
+                                                    makeTokenString(tokens)));
+        }
+
+        private String makeTokenString(Collection<Token> tokens)
+        {
+            List<String> tokenStrings = new ArrayList<String>();
+            for (Token<?> token : tokens)
+                tokenStrings.add(partitioner.getTokenFactory().toString(token));
+            return StringUtils.join(tokenStrings, VersionedValue.DELIMITER);
         }
 
         public VersionedValue load(double load)
@@ -150,15 +152,17 @@ public class VersionedValue implements Comparable<VersionedValue>
             return new VersionedValue(newVersion.toString());
         }
 
-        public VersionedValue leaving(Token token)
+        public VersionedValue leaving(Collection<Token> tokens)
         {
-            return new VersionedValue(VersionedValue.STATUS_LEAVING + VersionedValue.DELIMITER + partitioner.getTokenFactory().toString(token));
+            return new VersionedValue(versionString(VersionedValue.STATUS_LEAVING,
+                                                    makeTokenString(tokens)));
         }
 
-        public VersionedValue left(Token token, long expireTime)
+        public VersionedValue left(Collection<Token> tokens, long expireTime)
         {
-            return new VersionedValue(VersionedValue.STATUS_LEFT + VersionedValue.DELIMITER
-                    + partitioner.getTokenFactory().toString(token) + VersionedValue.DELIMITER + expireTime);
+            return new VersionedValue(versionString(VersionedValue.STATUS_LEFT,
+                                                    Long.toString(expireTime),
+                                                    makeTokenString(tokens)));
         }
 
         public VersionedValue moving(Token token)
