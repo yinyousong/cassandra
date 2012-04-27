@@ -19,6 +19,10 @@ package org.apache.cassandra.gms;
 
 import java.io.*;
 import java.net.InetAddress;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
 import java.util.UUID;
 
 import org.apache.cassandra.dht.IPartitioner;
@@ -104,18 +108,36 @@ public class VersionedValue implements Comparable<VersionedValue>
             this.partitioner = partitioner;
         }
 
+        @Deprecated
         public VersionedValue bootstrapping(Token token, UUID hostId)
         {
-            return new VersionedValue(versionString(VersionedValue.STATUS_BOOTSTRAPPING,
-                                                    hostId.toString(),
-                                                    partitioner.getTokenFactory().toString(token)));
+            return bootstrapping(Collections.singleton(token), hostId);
         }
 
+        public VersionedValue bootstrapping(Collection<Token> tokens, UUID hostId)
+        {
+            List<String> tokenString = new ArrayList<String>();
+            for (Token token : tokens)
+                tokenString.add(partitioner.getTokenFactory().toString(token));
+            return new VersionedValue(versionString(VersionedValue.STATUS_BOOTSTRAPPING,
+                                                    hostId.toString(),
+                                                    StringUtils.join(tokenString, VersionedValue.DELIMITER)));
+        }
+
+        @Deprecated
         public VersionedValue normal(Token token, UUID hostId)
         {
+            return normal(Collections.singleton(token), hostId);
+        }
+
+        public VersionedValue normal(Collection<Token> tokens, UUID hostId)
+        {
+            List<String> tokenString = new ArrayList<String>();
+            for (Token<?> token : tokens)
+                tokenString.add(partitioner.getTokenFactory().toString(token));
             return new VersionedValue(versionString(VersionedValue.STATUS_NORMAL,
                                                     hostId.toString(),
-                                                    partitioner.getTokenFactory().toString(token)));
+                                                    StringUtils.join(tokenString, VersionedValue.DELIMITER)));
         }
 
         public VersionedValue load(double load)
