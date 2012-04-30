@@ -43,7 +43,7 @@ package org.apache.cassandra.dht;
  import org.apache.cassandra.service.StorageService;
  import org.apache.cassandra.streaming.OperationType;
  import org.apache.cassandra.utils.FBUtilities;
- import org.apache.cassandra.utils.SimpleCondition;
+import org.apache.cassandra.utils.SimpleCondition;
 
 
 public class BootStrapper
@@ -53,17 +53,17 @@ public class BootStrapper
     /* endpoint that needs to be bootstrapped */
     protected final InetAddress address;
     /* token of the node being bootstrapped. */
-    protected final Token<?> token;
+    protected final Collection<Token> tokens;
     protected final TokenMetadata tokenMetadata;
     private static final long BOOTSTRAP_TIMEOUT = 30000; // default bootstrap timeout of 30s
 
-    public BootStrapper(InetAddress address, Token token, TokenMetadata tmd)
+    public BootStrapper(InetAddress address, Collection<Token> tokens, TokenMetadata tmd)
     {
         assert address != null;
-        assert token != null;
+        assert tokens != null && !tokens.isEmpty();
 
         this.address = address;
-        this.token = token;
+        this.tokens = tokens;
         tokenMetadata = tmd;
     }
 
@@ -78,7 +78,7 @@ public class BootStrapper
         for (String table : Schema.instance.getNonSystemTables())
         {
             AbstractReplicationStrategy strategy = Table.open(table).getReplicationStrategy();
-            streamer.addRanges(table, strategy.getPendingAddressRanges(tokenMetadata, token, address));
+            streamer.addRanges(table, strategy.getPendingAddressRanges(tokenMetadata, tokens, address));
         }
 
         streamer.fetch();
@@ -86,23 +86,49 @@ public class BootStrapper
     }
 
     /**
-     * if initialtoken was specified, use that.
-     * otherwise, pick a token to assume half the load of the most-loaded node.
+     * if initialtoken was specified, use that (split on comma).
+     * otherwise, if num_tokens == 1, pick a token to assume half the load of the most-loaded node.
+     * else choose num_tokens tokens at random
      */
-    public static Token getBootstrapToken(final TokenMetadata metadata, final Map<InetAddress, Double> load) throws IOException, ConfigurationException
+    public static Collection<Token> getBootstrapTokens(final TokenMetadata metadata, Map<InetAddress, Double> load) throws IOException, ConfigurationException
     {
         if (DatabaseDescriptor.getInitialToken() != null)
         {
-            logger.debug("token manually specified as " + DatabaseDescriptor.getInitialToken());
-            Token token = StorageService.getPartitioner().getTokenFactory().fromString(DatabaseDescriptor.getInitialToken());
-            if (metadata.getEndpoint(token) != null)
-                throw new ConfigurationException("Bootstraping to existing token " + token + " is not allowed (decommission/removetoken the old node first).");
-            return token;
+            logger.debug("tokens manually specified as " + DatabaseDescriptor.getInitialToken());
+            String[] tokenStrings = DatabaseDescriptor.getInitialToken().split(",");
+            List<Token> tokens = new ArrayList<Token>();
+            for (String tokenString : tokenStrings)
+            {
+                Token token = StorageService.getPartitioner().getTokenFactory().fromString(tokenString);
+                if (metadata.getEndpoint(token) != null)
+                    throw new ConfigurationException("Bootstraping to existing token " + tokenString + " is not allowed (decommission/removetoken the old node first).");
+                tokens.add(token);
+            }
+            return tokens;
         }
 
-        return getBalancedToken(metadata, load);
+        int numTokens = DatabaseDescriptor.getNumTokens();
+        if (numTokens < 1)
+            throw new ConfigurationException("num_tokens must be >= 1");
+        if (numTokens == 1)
+            return Collections.singleton(getBalancedToken(metadata, load));
+
+        return getRandomTokens(metadata, numTokens);
     }
 
+    public static Collection<Token> getRandomTokens(TokenMetadata metadata, int numTokens)
+    {
+        Set<Token> tokens = new HashSet<Token>(numTokens);
+        while (tokens.size() < numTokens)
+        {
+            Token token = StorageService.getPartitioner().getRandomToken();
+            if (metadata.getEndpoint(token) == null)
+                tokens.add(token);
+        }
+        return tokens;
+    }
+
+    @Deprecated
     public static Token getBalancedToken(TokenMetadata metadata, Map<InetAddress, Double> load)
     {
         InetAddress maxEndpoint = getBootstrapSource(metadata, load);
@@ -111,6 +137,7 @@ public class BootStrapper
         return t;
     }
 
+    @Deprecated
     static InetAddress getBootstrapSource(final TokenMetadata metadata, final Map<InetAddress, Double> load)
     {
         // sort first by number of nodes already bootstrapping into a source node's range, then by load.
@@ -154,6 +181,7 @@ public class BootStrapper
         return maxEndpoint;
     }
 
+    @Deprecated
     static Token<?> getBootstrapTokenFrom(InetAddress maxEndpoint)
     {
         Message message = new Message(FBUtilities.getBroadcastAddress(),
@@ -176,6 +204,7 @@ public class BootStrapper
         throw new RuntimeException("Bootstrap failed, could not obtain token from: " + maxEndpoint);
     }
 
+    @Deprecated
     public static class BootstrapTokenVerbHandler implements IVerbHandler
     {
         public void doVerb(Message message, String id)
@@ -187,6 +216,7 @@ public class BootStrapper
         }
     }
 
+    @Deprecated
     private static class BootstrapTokenCallback implements IAsyncCallback
     {
         private volatile Token<?> token;
