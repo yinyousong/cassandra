@@ -379,7 +379,7 @@ public class TokenMetadata
         lock.readLock().lock();
         try
         {
-            return tokenToEndpointMap.inverse().get(endpoint);
+            return new ArrayList<Token>(tokenToEndpointMap.inverse().get(endpoint));
         }
         finally
         {
