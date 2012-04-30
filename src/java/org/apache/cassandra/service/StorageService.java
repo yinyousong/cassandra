@@ -1326,9 +1326,9 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
 
                 // find the endpoint coordinating this removal that we need to notify when we're done
                 String[] coordinator = Gossiper.instance.getEndpointStateForEndpoint(endpoint).getApplicationState(ApplicationState.REMOVAL_COORDINATOR).value.split(VersionedValue.DELIMITER_STR, -1);
-                Token coordtoken = getPartitioner().getTokenFactory().fromString(coordinator[1]);
+                UUID hostId = UUID.fromString(coordinator[1]);
                 // grab any data we are now responsible for and notify responsible node
-                restoreReplicaCount(endpoint, tokenMetadata.getEndpoint(coordtoken));
+                restoreReplicaCount(endpoint, tokenMetadata.getEndpointForHostId(hostId));
             }
         } // not a member, nothing to do
     }
