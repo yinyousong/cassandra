@@ -17,6 +17,12 @@
  */
 package org.apache.cassandra.utils;
 
+/*
+ * BE ADVISED: New imports added here might introduce new dependencies for
+ * the clientutil jar.  If in doubt, run the `ant test-clientutil-jar' target
+ * afterward, and ensure the tests still pass.
+ */
+
 import java.io.*;
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
@@ -27,8 +33,6 @@ import static com.google.common.base.Charsets.UTF_8;
 
 import org.apache.cassandra.io.util.FileDataInput;
 import org.apache.cassandra.io.util.FileUtils;
-
-import org.apache.commons.lang.ArrayUtils;
 
 /**
  * Utility methods to make ByteBuffers less painful
@@ -70,7 +74,7 @@ import org.apache.commons.lang.ArrayUtils;
  */
 public class ByteBufferUtil
 {
-    public static final ByteBuffer EMPTY_BYTE_BUFFER = ByteBuffer.wrap(ArrayUtils.EMPTY_BYTE_ARRAY);
+    public static final ByteBuffer EMPTY_BYTE_BUFFER = ByteBuffer.wrap(new byte[0]);
 
     public static int compareUnsigned(ByteBuffer o1, ByteBuffer o2)
     {
@@ -337,8 +341,7 @@ public class ByteBufferUtil
         assert 0 <= length && length <= FBUtilities.MAX_UNSIGNED_SHORT : length;
         try
         {
-            out.writeByte((length >> 8) & 0xFF);
-            out.writeByte(length & 0xFF);
+            out.writeShort(length);
             write(buffer, out); // writing data bytes to output source
         }
         catch (IOException e)
@@ -361,8 +364,7 @@ public class ByteBufferUtil
     /* @return An unsigned short in an integer. */
     public static int readShortLength(DataInput in) throws IOException
     {
-        int length = (in.readByte() & 0xFF) << 8;
-        return length | (in.readByte() & 0xFF);
+        return in.readUnsignedShort();
     }
 
     /**
