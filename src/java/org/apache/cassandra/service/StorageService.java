@@ -60,6 +60,7 @@ import org.apache.cassandra.net.IAsyncResult;
 import org.apache.cassandra.net.Message;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.net.ResponseVerbHandler;
+import org.apache.cassandra.service.AntiEntropyService.RepairFuture;
 import org.apache.cassandra.service.AntiEntropyService.TreeRequestVerbHandler;
 import org.apache.cassandra.streaming.*;
 import org.apache.cassandra.thrift.*;
@@ -203,6 +204,12 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         return getRangesForEndpoint(table, FBUtilities.getBroadcastAddress());
     }
 
+    public Collection<Range<Token>> getLocalPrimaryRanges()
+    {
+        return getPrimaryRangesForEndpoint(FBUtilities.getBroadcastAddress());
+    }
+
+    @Deprecated
     public Range<Token> getLocalPrimaryRange()
     {
         return getPrimaryRangeForEndpoint(FBUtilities.getBroadcastAddress());
@@ -1228,7 +1235,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
             logger.info("Node " + endpoint + " state jump to leaving");
             tokenMetadata.updateNormalToken(token, endpoint);
         }
-        else if (!tokenMetadata.getToken(endpoint).equals(token))
+        else if (!tokenMetadata.getTokens(endpoint).contains(token))
         {
             logger.warn("Node " + endpoint + " 'leaving' token mismatch. Long network partition?");
             tokenMetadata.updateNormalToken(token, endpoint);
@@ -2041,17 +2048,26 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         if (Table.SYSTEM_TABLE.equals(tableName))
             return;
 
-        AntiEntropyService.RepairFuture future = forceTableRepair(getLocalPrimaryRange(), tableName, isSequential, columnFamilies);
-        if (future == null)
-            return;
-        try
+        List<AntiEntropyService.RepairFuture> futures = new ArrayList<AntiEntropyService.RepairFuture>();
+        for (Range<Token> range : getLocalPrimaryRanges())
         {
-            future.get();
+            RepairFuture future = forceTableRepair(range, tableName, isSequential, columnFamilies);
+            if (future != null)
+                futures.add(future);
         }
-        catch (Exception e)
+        if (futures.isEmpty())
+            return;
+        for (AntiEntropyService.RepairFuture future : futures)
         {
-            logger.error("Repair session " + future.session.getName() + " failed.", e);
-            throw new IOException("Some repair session(s) failed (see log for details).");
+            try
+            {
+                future.get();
+            }
+            catch (Exception e)
+            {
+                logger.error("Repair session " + future.session.getName() + " failed.", e);
+                throw new IOException("Some repair session(s) failed (see log for details).");
+            }
         }
     }
 
@@ -2105,9 +2121,8 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
      * This method returns the predecessor of the endpoint ep on the identifier
      * space.
      */
-    InetAddress getPredecessor(InetAddress ep)
+    InetAddress getPredecessor(Token token)
     {
-        Token token = tokenMetadata.getToken(ep);
         return tokenMetadata.getEndpoint(tokenMetadata.getPredecessor(token));
     }
 
@@ -2115,10 +2130,19 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
      * This method returns the successor of the endpoint ep on the identifier
      * space.
      */
-    public InetAddress getSuccessor(InetAddress ep)
+    public InetAddress getSuccessor(Token token)
     {
-        Token token = tokenMetadata.getToken(ep);
         return tokenMetadata.getEndpoint(tokenMetadata.getSuccessor(token));
+    }
+
+    /**
+     * Get the primary ranges for the specified endpoint.
+     * @param ep endpoint we are interested in.
+     * @return collection of ranges for the specified endpoint.
+     */
+    public Collection<Range<Token>> getPrimaryRangesForEndpoint(InetAddress ep)
+    {
+        return tokenMetadata.getPrimaryRangesFor(tokenMetadata.getTokens(ep));
     }
 
     /**
@@ -2126,6 +2150,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
      * @param ep endpoint we are interested in.
      * @return range for the specified endpoint.
      */
+    @Deprecated
     public Range<Token> getPrimaryRangeForEndpoint(InetAddress ep)
     {
         return tokenMetadata.getPrimaryRangeFor(tokenMetadata.getToken(ep));
@@ -2829,11 +2854,11 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
 
         for (Entry<InetAddress, Collection<Range<Token>>> ranges : constructEndpointToRangeMap(keyspace).entrySet())
         {
-            Token token = tokenMetadata.getToken(ranges.getKey());
+            InetAddress endpoint = ranges.getKey();
             for (Range<Token> range: ranges.getValue())
             {
-                float value = effective.get(token.toString()) == null ? 0.0F : effective.get(token.toString());
-                effective.put(token.toString(), value + ownership.get(range.left));
+                float value = effective.get(endpoint.toString()) == null ? 0.0F : effective.get(endpoint.toString());
+                effective.put(endpoint.toString(), value + ownership.get(range.left));
             }
         }
         return effective;
@@ -3149,7 +3174,9 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
      */
     public List<String> getRangeKeySample()
     {
-        List<DecoratedKey> keys = keySamples(ColumnFamilyStore.allUserDefined(), getLocalPrimaryRange());
+        List<DecoratedKey> keys = new ArrayList<DecoratedKey>();
+        for (Range<Token> range : getLocalPrimaryRanges())
+            keys.addAll(keySamples(ColumnFamilyStore.allUserDefined(), range));
 
         List<String> sampledKeys = new ArrayList<String>(keys.size());
         for (DecoratedKey key : keys)
