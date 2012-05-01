@@ -983,22 +983,17 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         return mapString;
     }
 
-    public String getHostId(String address) throws UnknownHostException
-    {
-        InetAddress endpoint = InetAddress.getByName(address);
-        return (endpoint == null) ? "unknown" : getTokenMetadata().getHostId(endpoint).toString();
-    }
-
     public String getLocalHostId()
     {
-        try
-        {
-            return getHostId(FBUtilities.getBroadcastAddress().getHostAddress());
-        }
-        catch (UnknownHostException e)
-        {
-            throw new RuntimeException("Unable to resolve the local address", e);
-        }
+        return getTokenMetadata().getHostId(FBUtilities.getBroadcastAddress()).toString();
+    }
+
+    public Map<String, String> getHostIdMap()
+    {
+        Map<String, String> mapOut = new HashMap<String, String>();
+        for (Map.Entry<InetAddress, UUID> entry : getTokenMetadata().getHostIdMapForReading().entrySet())
+            mapOut.put(entry.getKey().getHostAddress(), entry.getValue().toString());
+        return mapOut;
     }
 
     /**
