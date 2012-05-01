@@ -318,9 +318,9 @@ public class NodeProbe
         return ssProxy.getLocalHostId();
     }
 
-    public String getHostId(String address) throws UnknownHostException
+    public Map<String, String> getHostIdMap()
     {
-        return ssProxy.getHostId(address);
+        return ssProxy.getHostIdMap();
     }
 
     public String getLoadString()
