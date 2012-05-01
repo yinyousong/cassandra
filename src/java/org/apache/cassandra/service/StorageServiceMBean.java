@@ -155,11 +155,11 @@ public interface StorageServiceMBean
      */
     public Map<String, String> getTokenToEndpointMap();
 
-    /** Retrieve a host UUID for a given endpoint address */
-    public String getHostId(String address) throws UnknownHostException;
-
     /** Retrieve this hosts unique ID */
     public String getLocalHostId();
+
+    /** Retrieve the mapping of endpoint to host ID */
+    public Map<String, String> getHostIdMap();
 
     /**
      * Numeric load value.
