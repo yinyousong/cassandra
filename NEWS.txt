@@ -16,7 +16,8 @@ Upgrading
 ---------
     - The hints schema was changed from 1.1 to 1.2. Cassandra automatically
       snapshots and then truncates the hints column family as part of
-      starting up 1.2 for the first time.
+      starting up 1.2 for the first time.  Additionally, upgraded nodes
+      will not store new hints destined for older (pre-1.2) nodes.
 
 1.1.1
 =====
