@@ -94,6 +94,7 @@ public class NodeCmd
         GETCOMPACTIONTHRESHOLD,
         GETENDPOINTS,
         GOSSIPINFO,
+        ID,
         INFO,
         INVALIDATEKEYCACHE,
         INVALIDATEROWCACHE,
@@ -137,6 +138,7 @@ public class NodeCmd
         addCmdHelp(header, "join", "Join the ring");
         addCmdHelp(header, "info", "Print node informations (uptime, load, ...)");
         addCmdHelp(header, "cfstats", "Print statistics on column families");
+        addCmdHelp(header, "id [host]", "Print unique host ID");
         addCmdHelp(header, "version", "Print cassandra version");
         addCmdHelp(header, "tpstats", "Print usage statistics of thread pools");
         addCmdHelp(header, "proxyhistograms", "Print statistic histograms for network operations");
@@ -721,6 +723,11 @@ public class NodeCmd
                 case ENABLETHRIFT    : probe.startThriftServer(); break;
                 case STATUSTHRIFT    : nodeCmd.printIsThriftServerRunning(System.out); break;
                 case RESETLOCALSCHEMA: probe.resetLocalSchema(); break;
+
+                case ID :
+                    if (arguments.length > 0) System.out.println(probe.getHostId(arguments[0]));
+                    else                      System.out.println(probe.getLocalHostId());
+                    break;
 
                 case DRAIN :
                     try { probe.drain(); }
