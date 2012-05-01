@@ -232,6 +232,7 @@ public class TokenMetadata
     public InetAddress getEndpointForHostId(UUID hostId)
     {
         return endpointToHostIdMap.inverse().get(hostId);
+    }
 
     /** @return a copy of the endpoint-to-id map for read-only operations */
     public Map<InetAddress, UUID> getHostIdMapForReading()
