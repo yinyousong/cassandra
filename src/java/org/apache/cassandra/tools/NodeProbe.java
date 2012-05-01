@@ -318,6 +318,11 @@ public class NodeProbe
         return ssProxy.getLocalHostId();
     }
 
+    public String getHostId(String address) throws UnknownHostException
+    {
+        return ssProxy.getHostId(address);
+    }
+
     public String getLoadString()
     {
         return ssProxy.getLoadString();
