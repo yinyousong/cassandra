@@ -1014,7 +1014,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
     public Map<String, String> getHostIdMap()
     {
         Map<String, String> mapOut = new HashMap<String, String>();
-        for (Map.Entry<InetAddress, UUID> entry : getTokenMetadata().getHostIdMapForReading().entrySet())
+        for (Map.Entry<InetAddress, UUID> entry : getTokenMetadata().getEndpointToHostIdMapForReading().entrySet())
             mapOut.put(entry.getKey().getHostAddress(), entry.getValue().toString());
         return mapOut;
     }
