@@ -284,6 +284,20 @@ public class NodeCmd
         }
     }
 
+    /** Writes a table of host IDs to a PrintStream */
+    public void printHostIds(PrintStream outs)
+    {
+        System.out.print(String.format("%-16s %-7s %s%n", "Address", "Status", "Host ID"));
+        for (Map.Entry<String, String> entry : probe.getHostIdMap().entrySet())
+        {
+            String status;
+            if      (probe.getLiveNodes().contains(entry.getKey()))        status = "Up";
+            else if (probe.getUnreachableNodes().contains(entry.getKey())) status = "Down";
+            else                                                           status = "?";
+            System.out.print(String.format("%-16s %-7s %s%n", entry.getKey(), status, entry.getValue()));
+        }
+    }
+
     public void printThreadPoolStats(PrintStream outs)
     {
         outs.printf("%-25s%10s%10s%15s%10s%18s%n", "Pool Name", "Active", "Pending", "Completed", "Blocked", "All time blocked");
@@ -723,12 +737,7 @@ public class NodeCmd
                 case ENABLETHRIFT    : probe.startThriftServer(); break;
                 case STATUSTHRIFT    : nodeCmd.printIsThriftServerRunning(System.out); break;
                 case RESETLOCALSCHEMA: probe.resetLocalSchema(); break;
-
-                case IDS :
-                    System.out.print(String.format("%-17s %s%n", "Address", "Host ID"));
-                    for (Map.Entry<String, String> entry : probe.getHostIdMap().entrySet())
-                        System.out.print(String.format("%-17s %s%n", entry.getKey(), entry.getValue()));
-                    break;
+                case IDS             : nodeCmd.printHostIds(System.out); break;
 
                 case DRAIN :
                     try { probe.drain(); }
