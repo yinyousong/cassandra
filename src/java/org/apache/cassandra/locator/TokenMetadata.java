@@ -221,7 +221,7 @@ public class TokenMetadata
     }
 
     /** @return a copy of the endpoint-to-id map for read-only operations */
-    public Map<InetAddress, UUID> getHostIdMapForReading()
+    public Map<InetAddress, UUID> getEndpointToHostIdMapForReading()
     {
         Map<InetAddress, UUID> readMap = new HashMap<InetAddress, UUID>();
         readMap.putAll(endpointToHostIdMap);
