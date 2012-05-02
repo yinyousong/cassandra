@@ -210,7 +210,7 @@ public class SSTableReader extends SSTable
     {
         final Collection<SSTableReader> sstables = new LinkedBlockingQueue<SSTableReader>();
 
-        ExecutorService executor = DebuggableThreadPoolExecutor.createWithPoolSize("SSTableBatchOpen", Runtime.getRuntime().availableProcessors());
+        ExecutorService executor = DebuggableThreadPoolExecutor.createWithFixedPoolSize("SSTableBatchOpen", Runtime.getRuntime().availableProcessors());
         for (final Map.Entry<Descriptor, Set<Component>> entry : entries)
         {
             Runnable runnable = new Runnable()
@@ -893,6 +893,8 @@ public class SSTableReader extends SSTable
     */
     public SSTableScanner getDirectScanner(Range<Token> range)
     {
+        if (range == null)
+            return getDirectScanner();
         return new SSTableBoundedScanner(this, true, range);
     }
 
