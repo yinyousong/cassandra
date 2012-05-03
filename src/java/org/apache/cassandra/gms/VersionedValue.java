@@ -152,10 +152,22 @@ public class VersionedValue implements Comparable<VersionedValue>
             return new VersionedValue(newVersion.toString());
         }
 
+        @Deprecated
+        public VersionedValue leaving(Token token)
+        {
+            return leaving(Collections.singleton(token));
+        }
+
         public VersionedValue leaving(Collection<Token> tokens)
         {
             return new VersionedValue(versionString(VersionedValue.STATUS_LEAVING,
                                                     makeTokenString(tokens)));
+        }
+
+        @Deprecated
+        public VersionedValue left(Token token, long expireTime)
+        {
+            return left(Collections.singleton(token), expireTime);
         }
 
         public VersionedValue left(Collection<Token> tokens, long expireTime)
