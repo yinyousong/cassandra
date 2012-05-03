@@ -179,7 +179,6 @@ public class TokenMetadata
                 InetAddress prev = tokenToEndpointMap.put(token, endpoint);
                 if (!endpoint.equals(prev) && prev != null)
                     logger.warn("Token " + token + " changing ownership from " + prev + " to " + endpoint);
-                // TODO: check invalidate caches
             }
         }
         finally
