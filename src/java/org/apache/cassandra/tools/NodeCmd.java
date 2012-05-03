@@ -760,7 +760,15 @@ public class NodeCmd
 
                 case MOVE :
                     if (arguments.length != 1) { badUse("Missing token argument for move."); }
-                    probe.move(arguments[0]);
+                    try
+                    {
+                        probe.move(arguments[0]);
+                    }
+                    catch (UnsupportedOperationException uoerror)
+                    {
+                        System.err.println(uoerror.getMessage());
+                        System.exit(1);
+                    }
                     break;
 
                 case JOIN:
