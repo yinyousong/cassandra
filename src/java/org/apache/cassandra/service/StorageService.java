@@ -842,7 +842,6 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         if (null == DatabaseDescriptor.getReplaceToken())
         {
             // if not an existing token then bootstrap
-            // TODO: gossip all the tokens
             Gossiper.instance.addLocalApplicationState(ApplicationState.STATUS,
                                                        valueFactory.bootstrapping(tokens, SystemTable.getLocalHostId()));
             setMode(Mode.JOINING, "sleeping " + RING_DELAY + " ms for pending range setup", true);
