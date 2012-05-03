@@ -2960,11 +2960,11 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
 
         for (Entry<InetAddress, Collection<Range<Token>>> ranges : constructEndpointToRangeMap(keyspace).entrySet())
         {
-            InetAddress endpoint = ranges.getKey();
+            Token token = tokenMetadata.getToken(ranges.getKey());
             for (Range<Token> range: ranges.getValue())
             {
-                float value = effective.get(endpoint.toString()) == null ? 0.0F : effective.get(endpoint.toString());
-                effective.put(endpoint.toString(), value + ownership.get(range.left));
+                float value = effective.get(token.toString()) == null ? 0.0F : effective.get(token.toString());
+                effective.put(token.toString(), value + ownership.get(range.left));
             }
         }
         return effective;
