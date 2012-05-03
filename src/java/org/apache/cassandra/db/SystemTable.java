@@ -142,16 +142,25 @@ public class SystemTable
     /**
      * Record token being used by another node
      */
+    @Deprecated
     public static synchronized void updateToken(InetAddress ep, Token token)
+    {
+        updateTokens(ep, Arrays.asList(token));
+    }
+
+    public static synchronized void updateTokens(InetAddress ep, Collection<Token> tokens)
     {
         if (ep.equals(FBUtilities.getBroadcastAddress()))
         {
-            removeToken(token);
+            removeTokens(tokens);
             return;
         }
         IPartitioner p = StorageService.getPartitioner();
         ColumnFamily cf = ColumnFamily.create(Table.SYSTEM_TABLE, STATUS_CF);
-        cf.addColumn(new Column(p.getTokenFactory().toByteArray(token), ByteBuffer.wrap(ep.getAddress()), FBUtilities.timestampMicros()));
+        long timestampMicros = FBUtilities.timestampMicros();
+        for (Token token : tokens)
+            cf.addColumn(new Column(p.getTokenFactory().toByteArray(token), ByteBuffer.wrap(ep.getAddress()), timestampMicros));
+
         RowMutation rm = new RowMutation(Table.SYSTEM_TABLE, RING_KEY);
         rm.add(cf);
         try
@@ -168,11 +177,19 @@ public class SystemTable
     /**
      * Remove stored token being used by another node
      */
+    @Deprecated
     public static synchronized void removeToken(Token token)
+    {
+        removeTokens(Arrays.asList(token));
+    }
+
+    public static synchronized void removeTokens(Collection<Token> tokens)
     {
         IPartitioner p = StorageService.getPartitioner();
         RowMutation rm = new RowMutation(Table.SYSTEM_TABLE, RING_KEY);
-        rm.delete(new QueryPath(STATUS_CF, null, p.getTokenFactory().toByteArray(token)), FBUtilities.timestampMicros());
+        long timestampMicros = FBUtilities.timestampMicros();
+        for (Token token : tokens)
+            rm.delete(new QueryPath(STATUS_CF, null, p.getTokenFactory().toByteArray(token)), timestampMicros);
         try
         {
             rm.apply();
@@ -187,11 +204,38 @@ public class SystemTable
     /**
      * This method is used to update the System Table with the new token for this node
     */
+    @Deprecated
     public static synchronized void updateToken(Token token)
+    {
+        updateTokens(Arrays.asList(token));
+    }
+
+    /**
+     * This method is used to update the System Table with the new tokens for this node
+    */
+    public static synchronized void updateTokens(Collection<Token> tokens)
     {
         IPartitioner p = StorageService.getPartitioner();
         ColumnFamily cf = ColumnFamily.create(Table.SYSTEM_TABLE, STATUS_CF);
-        cf.addColumn(new Column(SystemTable.TOKEN, p.getTokenFactory().toByteArray(token), FBUtilities.timestampMicros()));
+
+        // serialized tokens as a blob. Could use composite columns here instead? 
+        int len = tokens.size() * Short.SIZE/8;
+        List<ByteBuffer> tokenBytes = new ArrayList<ByteBuffer>(tokens.size());
+        for (Token token : tokens)
+        {
+            final ByteBuffer byteArray = p.getTokenFactory().toByteArray(token);
+            tokenBytes.add(byteArray);
+            len += byteArray.remaining();
+        }
+        ByteBuffer serialized = ByteBuffer.allocate(len);
+        for (ByteBuffer byteArray : tokenBytes)
+        {
+            serialized.putShort((short)byteArray.remaining());
+            serialized.put(byteArray);
+        }
+        serialized.rewind();
+
+        cf.addColumn(new Column(SystemTable.TOKEN, serialized, FBUtilities.timestampMicros()));
         RowMutation rm = new RowMutation(Table.SYSTEM_TABLE, LOCATION_KEY);
         rm.add(cf);
         try
@@ -305,12 +349,31 @@ public class SystemTable
             throw new ConfigurationException("Saved cluster name " + savedClusterName + " != configured name " + DatabaseDescriptor.getClusterName());
     }
 
+    @Deprecated
     public static Token getSavedToken()
+    {
+        return getSavedTokens().iterator().next();
+    }
+
+    public static Collection<Token> getSavedTokens()
     {
         Table table = Table.open(Table.SYSTEM_TABLE);
         QueryFilter filter = QueryFilter.getNamesFilter(decorate(LOCATION_KEY), new QueryPath(STATUS_CF), TOKEN);
         ColumnFamily cf = table.getColumnFamilyStore(STATUS_CF).getColumnFamily(filter);
-        return cf == null ? null : StorageService.getPartitioner().getTokenFactory().fromByteArray(cf.getColumn(TOKEN).value());
+        if (cf == null)
+            return Collections.emptyList();
+
+        ByteBuffer serialized = cf.getColumn(TOKEN).value();
+        List<Token> tokens = new ArrayList<Token>();
+        while (serialized.hasRemaining())
+        {
+            short len = serialized.getShort();
+            byte[] tokenBytes = new byte[len];
+            serialized.get(tokenBytes);
+            tokens.add(StorageService.getPartitioner().getTokenFactory().fromByteArray(ByteBuffer.wrap(tokenBytes)));
+        }
+
+        return tokens;
     }
 
     public static int incrementAndGetGeneration() throws IOException
