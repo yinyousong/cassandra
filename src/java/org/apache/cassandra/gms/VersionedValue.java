@@ -238,6 +238,12 @@ public class VersionedValue implements Comparable<VersionedValue>
                     outValue = versionString(pieces[0], pieces[2]);
                 }
 
+                if (type == STATUS_LEFT)
+                {
+                    assert pieces.length >= 3;
+                    outValue = versionString(pieces[0], pieces[2], pieces[1]);
+                }
+
                 if ((type == REMOVAL_COORDINATOR) || (type == REMOVING_TOKEN) || (type == REMOVED_TOKEN))
                     throw new RuntimeException(String.format("Unable to serialize %s(%s...) for nodes older than 1.2",
                                                              VersionedValue.class.getName(),
