@@ -21,6 +21,7 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutionException;
@@ -75,7 +76,23 @@ public interface StorageServiceMBean
      *
      * @return a string token
      */
+    @Deprecated
     public String getToken();
+
+    /**
+     * Fetch string representations of the tokens for this node.
+     *
+     * @return a collection of tokens formatted as strings
+     */
+    public List<String> getTokens();
+
+    /**
+     * Fetch string representations of the tokens for a specified node.
+     *
+     * @param endpoint string representation of an node
+     * @return a collection of tokens formatted as strings
+     */
+    public List<String> getTokens(String endpoint) throws UnknownHostException;
 
     /**
      * Fetch a string representation of the Cassandra version.
