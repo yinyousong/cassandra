@@ -82,7 +82,6 @@ public class NodeCmd
         CFSTATS,
         CLEANUP,
         CLEARSNAPSHOT,
-        CLUSTERINFO,
         COMPACT,
         COMPACTIONSTATS,
         DECOMMISSION,
@@ -139,7 +138,6 @@ public class NodeCmd
         addCmdHelp(header, "ring", "Print informations on the token ring");
         addCmdHelp(header, "join", "Join the ring");
         addCmdHelp(header, "info", "Print node informations (uptime, load, ...)");
-        addCmdHelp(header, "clusterinfo", "Print cluster informations (status, load, IDs, ...)");
         addCmdHelp(header, "cfstats", "Print statistics on column families");
         addCmdHelp(header, "ids", "Print list of unique host IDs");
         addCmdHelp(header, "version", "Print cassandra version");
@@ -284,56 +282,6 @@ public class NodeCmd
                           : "?";
             String owns = new DecimalFormat("##0.00%").format(ownerships.get(token) == null ? 0.0F : ownerships.get(token));
             outs.printf(format, primaryEndpoint, dataCenter, rack, status, state, load, owns, token);
-        }
-    }
-
-    /** Writes a table of cluster-wide node information to a PrintStream */
-    public void printClusterInfo(PrintStream outs, String keyspace)
-    {
-        Collection<String> joiningNodes = probe.getJoiningNodes();
-        Collection<String> leavingNodes = probe.getLeavingNodes();
-        Collection<String> movingNodes = probe.getMovingNodes();
-        Map<String, String> loadMap = probe.getLoadMap();
-
-        // Calculate per-token ownership of the ring
-        Map<String, Float> ownerships;
-        try
-        {
-            ownerships = probe.effectiveOwnership(keyspace);
-        }
-        catch (ConfigurationException ex)
-        {
-            ownerships = probe.getOwnership();
-            outs.printf("Warn: Ownership information does not include topology, please specify a keyspace. \n");
-        }
-
-        String fmt = "%-16s %-7s %-8s %-10s %-7s %-7s %s%n";
-        outs.print(String.format(fmt, "Address", "Status", "State", "Load", "Tokens", "Owns", "Host ID"));
-
-        for (Map.Entry<String, String> entry : probe.getHostIdMap().entrySet())
-        {
-            String endpoint = entry.getKey();
-
-            String status;
-            if      (probe.getLiveNodes().contains(endpoint))        status = "Up";
-            else if (probe.getUnreachableNodes().contains(endpoint)) status = "Down";
-            else                                                     status = "?";
-
-            String state;
-            if      (joiningNodes.contains(endpoint)) state = "Joining";
-            else if (leavingNodes.contains(endpoint)) state = "Leaving";
-            else if (movingNodes.contains(endpoint))  state = "Moving";
-            else                                      state = "Normal";
-
-            String load = loadMap.containsKey(endpoint) ? loadMap.get(endpoint) : "?";
-            List<String> tokens = probe.getTokens(endpoint);
-
-            Float owns = 0.0F;
-            for (String token : tokens)
-                owns += (ownerships.get(token) == null) ? 0.0F : ownerships.get(token);
-            String strOwns = new DecimalFormat("##0.00%").format(owns);
-
-            outs.print(String.format(fmt, endpoint, status, state, load, tokens.size(), strOwns, entry.getValue()));
         }
     }
 
@@ -791,11 +739,6 @@ public class NodeCmd
                 case STATUSTHRIFT    : nodeCmd.printIsThriftServerRunning(System.out); break;
                 case RESETLOCALSCHEMA: probe.resetLocalSchema(); break;
                 case IDS             : nodeCmd.printHostIds(System.out); break;
-
-                case CLUSTERINFO :
-                    if (arguments.length > 0) nodeCmd.printClusterInfo(System.out, arguments[0]);
-                    else                      nodeCmd.printClusterInfo(System.out, null);
-                    break;
 
                 case DRAIN :
                     try { probe.drain(); }

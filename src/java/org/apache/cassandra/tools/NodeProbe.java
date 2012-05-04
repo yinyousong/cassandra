@@ -308,27 +308,9 @@ public class NodeProbe
       return compactionProxy;
     }
 
-    @Deprecated
     public String getToken()
     {
         return ssProxy.getToken();
-    }
-
-    public List<String> getTokens()
-    {
-        return ssProxy.getTokens();
-    }
-
-    public List<String> getTokens(String endpoint)
-    {
-        try
-        {
-            return ssProxy.getTokens(endpoint);
-        }
-        catch (UnknownHostException e)
-        {
-            throw new RuntimeException(e);
-        }
     }
 
     public String getLocalHostId()
