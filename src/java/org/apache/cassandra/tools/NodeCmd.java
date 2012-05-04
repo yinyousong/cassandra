@@ -215,33 +215,28 @@ public class NodeCmd
         Map<String, String> tokenToEndpoint = probe.getTokenToEndpointMap();
         List<String> sortedTokens = new ArrayList<String>(tokenToEndpoint.keySet());
 
-        Collection<String> liveNodes = probe.getLiveNodes();
-        Collection<String> deadNodes = probe.getUnreachableNodes();
-        Collection<String> joiningNodes = probe.getJoiningNodes();
-        Collection<String> leavingNodes = probe.getLeavingNodes();
-        Collection<String> movingNodes = probe.getMovingNodes();
-        Map<String, String> loadMap = probe.getLoadMap();
-
-        String format = "%-16s%-12s%-12s%-7s%-8s%-16s%-20s%-44s%n";
+        String format;
 
         // Calculate per-token ownership of the ring
         Map<String, Float> ownerships;
         try
         {
             ownerships = probe.effectiveOwnership(keyspace);
-            outs.printf(format, "Address", "DC", "Rack", "Status", "State", "Load", "Effective-Ownership", "Token");
+            format = "%-16s%-12s%-12s%-20s%-44s%n";
+            outs.printf(format, "Address", "DC", "Rack", "Effective-Ownership", "Token");
         }
         catch (ConfigurationException ex)
         {
             ownerships = probe.getOwnership();
+            format = "%-16s%-12s%-12s%-8s%-44s%n";
             outs.printf("Note: Ownership information does not include topology, please specify a keyspace. \n");
-            outs.printf(format, "Address", "DC", "Rack", "Status", "State", "Load", "Owns", "Token");
+            outs.printf(format, "Address", "DC", "Rack", "Owns", "Token");
         }
 
         // show pre-wrap token twice so you can always read a node's range as
         // (previous line token, current line token]
         if (sortedTokens.size() > 1)
-            outs.printf(format, "", "", "", "", "", "", "", sortedTokens.get(sortedTokens.size() - 1));
+            outs.printf(format, "", "", "", "", sortedTokens.get(sortedTokens.size() - 1));
 
         for (String token : sortedTokens)
         {
@@ -264,26 +259,9 @@ public class NodeCmd
             {
                 rack = "Unknown";
             }
-            String status = liveNodes.contains(primaryEndpoint)
-                            ? "Up"
-                            : deadNodes.contains(primaryEndpoint)
-                              ? "Down"
-                              : "?";
 
-            String state = "Normal";
-
-            if (joiningNodes.contains(primaryEndpoint))
-                state = "Joining";
-            else if (leavingNodes.contains(primaryEndpoint))
-                state = "Leaving";
-            else if (movingNodes.contains(primaryEndpoint))
-                state = "Moving";
-
-            String load = loadMap.containsKey(primaryEndpoint)
-                          ? loadMap.get(primaryEndpoint)
-                          : "?";
             String owns = new DecimalFormat("##0.00%").format(ownerships.get(token) == null ? 0.0F : ownerships.get(token));
-            outs.printf(format, primaryEndpoint, dataCenter, rack, status, state, load, owns, token);
+            outs.printf(format, primaryEndpoint, dataCenter, rack, owns, token);
         }
     }
 
