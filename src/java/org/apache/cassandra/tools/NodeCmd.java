@@ -760,7 +760,15 @@ public class NodeCmd
 
                 case MOVE :
                     if (arguments.length != 1) { badUse("Missing token argument for move."); }
-                    probe.move(arguments[0]);
+                    try
+                    {
+                        probe.move(arguments[0]);
+                    }
+                    catch (UnsupportedOperationException uoerror)
+                    {
+                        System.err.println(uoerror.getMessage());
+                        System.exit(1);
+                    }
                     break;
 
                 case JOIN:
@@ -788,8 +796,9 @@ public class NodeCmd
                     probe.rebuild(arguments.length == 1 ? arguments[0] : null);
                     break;
 
-                case REMOVENODE  :
                 case REMOVETOKEN :
+                    System.err.println("Warn: removetoken is deprecated, please use removenode instead");
+                case REMOVENODE  :
                     if (arguments.length != 1) { badUse("Missing an argument for removenode (either status, force, or an ID)"); }
                     else if (arguments[0].equals("status")) { nodeCmd.printRemovalStatus(System.out); }
                     else if (arguments[0].equals("force"))  { nodeCmd.printRemovalStatus(System.out); probe.forceRemoveCompletion(); }
