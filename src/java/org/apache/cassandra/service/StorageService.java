@@ -1833,9 +1833,28 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
 
     /* These methods belong to the MBean interface */
 
+    @Deprecated
     public String getToken()
     {
         return getLocalToken().toString();
+    }
+
+    public List<String> getTokens()
+    {
+        return getTokens(FBUtilities.getBroadcastAddress());
+    }
+
+    public List<String> getTokens(String endpoint) throws UnknownHostException
+    {
+        return getTokens(InetAddress.getByName(endpoint));
+    }
+
+    private List<String> getTokens(InetAddress endpoint)
+    {
+        List<String> strTokens = new ArrayList<String>();
+        for (Token tok : getTokenMetadata().getTokens(endpoint))
+            strTokens.add(tok.toString());
+        return strTokens;
     }
 
     public String getReleaseVersion()
