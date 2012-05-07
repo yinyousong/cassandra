@@ -49,6 +49,7 @@ public class NodeCmd
     private static final Pair<String, String> USERNAME_OPT = new Pair<String, String>("u",  "username");
     private static final Pair<String, String> PASSWORD_OPT = new Pair<String, String>("pw", "password");
     private static final Pair<String, String> TAG_OPT = new Pair<String, String>("t", "tag");
+    private static final Pair<String, String> TOKENS_OPT = new Pair<String, String>("T", "tokens");
     private static final Pair<String, String> PRIMARY_RANGE_OPT = new Pair<String, String>("pr", "partitioner-range");
     private static final Pair<String, String> SNAPSHOT_REPAIR_OPT = new Pair<String, String>("snapshot", "with-snapshot");
 
@@ -67,6 +68,7 @@ public class NodeCmd
         options.addOption(USERNAME_OPT, true, "remote jmx agent username");
         options.addOption(PASSWORD_OPT, true, "remote jmx agent password");
         options.addOption(TAG_OPT,      true, "optional name to give a snapshot");
+        options.addOption(TOKENS_OPT,   false, "display all tokens");
         options.addOption(PRIMARY_RANGE_OPT, false, "only repair the first range returned by the partitioner for the node");
         options.addOption(SNAPSHOT_REPAIR_OPT, false, "repair one node at a time using snapshots");
     }
@@ -95,7 +97,6 @@ public class NodeCmd
         GETCOMPACTIONTHRESHOLD,
         GETENDPOINTS,
         GOSSIPINFO,
-        IDS,
         INFO,
         INVALIDATEKEYCACHE,
         INVALIDATEROWCACHE,
@@ -138,10 +139,9 @@ public class NodeCmd
         // No args
         addCmdHelp(header, "ring", "Print informations on the token ring");
         addCmdHelp(header, "join", "Join the ring");
-        addCmdHelp(header, "info", "Print node informations (uptime, load, ...)");
+        addCmdHelp(header, "info [-T/--tokens]", "Print node informations (uptime, load, ...)");
         addCmdHelp(header, "clusterinfo", "Print cluster informations (status, load, IDs, ...)");
         addCmdHelp(header, "cfstats", "Print statistics on column families");
-        addCmdHelp(header, "ids", "Print list of unique host IDs");
         addCmdHelp(header, "version", "Print cassandra version");
         addCmdHelp(header, "tpstats", "Print usage statistics of thread pools");
         addCmdHelp(header, "proxyhistograms", "Print statistic histograms for network operations");
@@ -315,20 +315,6 @@ public class NodeCmd
         }
     }
 
-    /** Writes a table of host IDs to a PrintStream */
-    public void printHostIds(PrintStream outs)
-    {
-        System.out.print(String.format("%-16s %-7s %s%n", "Address", "Status", "Host ID"));
-        for (Map.Entry<String, String> entry : probe.getHostIdMap().entrySet())
-        {
-            String status;
-            if      (probe.getLiveNodes().contains(entry.getKey()))        status = "Up";
-            else if (probe.getUnreachableNodes().contains(entry.getKey())) status = "Down";
-            else                                                           status = "?";
-            System.out.print(String.format("%-16s %-7s %s%n", entry.getKey(), status, entry.getValue()));
-        }
-    }
-
     public void printThreadPoolStats(PrintStream outs)
     {
         outs.printf("%-25s%10s%10s%15s%10s%18s%n", "Pool Name", "Active", "Pending", "Completed", "Blocked", "All time blocked");
@@ -358,10 +344,18 @@ public class NodeCmd
      *
      * @param outs the stream to write to
      */
-    public void printInfo(PrintStream outs)
+    public void printInfo(PrintStream outs, ToolCommandLine cmd)
     {
         boolean gossipInitialized = probe.isInitialized();
-        outs.printf("%-17s: %s%n", "Token", probe.getToken());
+        List<String> toks = probe.getTokens();
+
+        // If there is just 1 token, print it now like we always have, otherwise,
+        // require that -T/--tokens be passed (that output is potentially verbose).
+        if (toks.size() == 1)
+            outs.printf("%-17s: %s%n", "Token", toks.get(0));
+        else if (!cmd.hasOption(TOKENS_OPT.left))
+            outs.printf("%-17s: (invoke with -T/--tokens to see all %d tokens)%n", "Token", toks.size());
+
         outs.printf("%-17s: %s%n", "ID", probe.getLocalHostId());
         outs.printf("%-17s: %s%n", "Gossip active", gossipInitialized);
         outs.printf("%-17s: %s%n", "Load", probe.getLoadString());
@@ -408,6 +402,12 @@ public class NodeCmd
                     cacheService.getRowCacheRequests(),
                     cacheService.getRowCacheRecentHitRate(),
                     cacheService.getRowCacheSavePeriodInSeconds());
+
+        if (toks.size() > 1 && cmd.hasOption(TOKENS_OPT.left))
+        {
+            for (String tok : toks)
+                outs.printf("%-17s: %s%n", "Token", tok);
+        }
     }
 
     public void printReleaseVersion(PrintStream outs)
@@ -756,7 +756,7 @@ public class NodeCmd
                     else                      { nodeCmd.printRing(System.out, null); };
                     break;
 
-                case INFO            : nodeCmd.printInfo(System.out); break;
+                case INFO            : nodeCmd.printInfo(System.out, cmd); break;
                 case CFSTATS         : nodeCmd.printColumnFamilyStats(System.out); break;
                 case DECOMMISSION    : probe.decommission(); break;
                 case TPSTATS         : nodeCmd.printThreadPoolStats(System.out); break;
@@ -768,7 +768,6 @@ public class NodeCmd
                 case ENABLETHRIFT    : probe.startThriftServer(); break;
                 case STATUSTHRIFT    : nodeCmd.printIsThriftServerRunning(System.out); break;
                 case RESETLOCALSCHEMA: probe.resetLocalSchema(); break;
-                case IDS             : nodeCmd.printHostIds(System.out); break;
 
                 case CLUSTERINFO :
                     if (arguments.length > 0) nodeCmd.printClusterInfo(System.out, arguments[0]);
