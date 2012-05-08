@@ -20,6 +20,7 @@ package org.apache.cassandra.gms;
 import java.io.*;
 import java.net.InetAddress;
 
+import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.io.IVersionedSerializer;
 import org.apache.cassandra.net.CompactEndpointSerializationHelper;
 
@@ -27,23 +28,13 @@ import org.apache.cassandra.net.CompactEndpointSerializationHelper;
  * Contains information about a specified list of Endpoints and the largest version
  * of the state they have generated as known by the local endpoint.
  */
-
 public class GossipDigest implements Comparable<GossipDigest>
 {
-    private static final IVersionedSerializer<GossipDigest> serializer;
-    static
-    {
-        serializer = new GossipDigestSerializer();
-    }
+    public static final IVersionedSerializer<GossipDigest> serializer = new GossipDigestSerializer();
 
     final InetAddress endpoint;
     final int generation;
     final int maxVersion;
-
-    public static IVersionedSerializer<GossipDigest> serializer()
-    {
-        return serializer;
-    }
 
     GossipDigest(InetAddress ep, int gen, int version)
     {
@@ -103,8 +94,11 @@ class GossipDigestSerializer implements IVersionedSerializer<GossipDigest>
         return new GossipDigest(endpoint, generation, maxVersion);
     }
 
-    public long serializedSize(GossipDigest gossipDigest, int version)
+    public long serializedSize(GossipDigest gDigest, int version)
     {
-        throw new UnsupportedOperationException();
+        long size = CompactEndpointSerializationHelper.serializedSize(gDigest.endpoint);
+        size += TypeSizes.NATIVE.sizeof(gDigest.generation);
+        size += TypeSizes.NATIVE.sizeof(gDigest.maxVersion);
+        return size;
     }
 }

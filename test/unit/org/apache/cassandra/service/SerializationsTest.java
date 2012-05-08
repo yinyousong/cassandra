@@ -1,6 +1,4 @@
-package org.apache.cassandra.service;
 /*
- *
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -17,9 +15,8 @@ package org.apache.cassandra.service;
  * KIND, either express or implied.  See the License for the
  * specific language governing permissions and limitations
  * under the License.
- *
  */
-
+package org.apache.cassandra.service;
 
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
@@ -34,7 +31,7 @@ import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.RandomPartitioner;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
-import org.apache.cassandra.net.MessageSerializer;
+import org.apache.cassandra.net.MessageIn;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.MerkleTree;
 
@@ -45,16 +42,17 @@ public class SerializationsTest extends AbstractSerializationsTester
         System.setProperty("cassandra.partitioner", "RandomPartitioner");
     }
 
-    private static MessageSerializer messageSerializer = new MessageSerializer();
-
     public static Range<Token> FULL_RANGE = new Range<Token>(StorageService.getPartitioner().getMinimumToken(), StorageService.getPartitioner().getMinimumToken());
 
     private void testTreeRequestWrite() throws IOException
     {
         DataOutputStream out = getOutput("service.TreeRequest.bin");
-        AntiEntropyService.TreeRequestVerbHandler.SERIALIZER.serialize(Statics.req, out, getVersion());
-        messageSerializer.serialize(AntiEntropyService.TreeRequestVerbHandler.makeVerb(Statics.req, getVersion()), out, getVersion());
+        AntiEntropyService.TreeRequest.serializer.serialize(Statics.req, out, getVersion());
+        Statics.req.createMessage().serialize(out, getVersion());
         out.close();
+
+        // test serializedSize
+        testSerializedSize(Statics.req, AntiEntropyService.TreeRequest.serializer);
     }
 
     @Test
@@ -64,8 +62,8 @@ public class SerializationsTest extends AbstractSerializationsTester
             testTreeRequestWrite();
 
         DataInputStream in = getInput("service.TreeRequest.bin");
-        assert AntiEntropyService.TreeRequestVerbHandler.SERIALIZER.deserialize(in, getVersion()) != null;
-        assert messageSerializer.deserialize(in, getVersion()) != null;
+        assert AntiEntropyService.TreeRequest.serializer.deserialize(in, getVersion()) != null;
+        assert MessageIn.read(in, getVersion(), "id") != null;
         in.close();
     }
 
@@ -82,11 +80,15 @@ public class SerializationsTest extends AbstractSerializationsTester
         AntiEntropyService.Validator v1 = new AntiEntropyService.Validator(Statics.req, mt);
 
         DataOutputStream out = getOutput("service.TreeResponse.bin");
-        AntiEntropyService.TreeResponseVerbHandler.SERIALIZER.serialize(v0, out, getVersion());
-        AntiEntropyService.TreeResponseVerbHandler.SERIALIZER.serialize(v1, out, getVersion());
-        messageSerializer.serialize(AntiEntropyService.TreeResponseVerbHandler.makeVerb(FBUtilities.getBroadcastAddress(), v0), out, getVersion());
-        messageSerializer.serialize(AntiEntropyService.TreeResponseVerbHandler.makeVerb(FBUtilities.getBroadcastAddress(), v1), out, getVersion());
+        AntiEntropyService.Validator.serializer.serialize(v0, out, getVersion());
+        AntiEntropyService.Validator.serializer.serialize(v1, out, getVersion());
+        v0.createMessage().serialize(out, getVersion());
+        v1.createMessage().serialize(out, getVersion());
         out.close();
+
+        // test serializedSize
+        testSerializedSize(v0, AntiEntropyService.Validator.serializer);
+        testSerializedSize(v1, AntiEntropyService.Validator.serializer);
     }
 
     @Test
@@ -96,10 +98,10 @@ public class SerializationsTest extends AbstractSerializationsTester
             testTreeResponseWrite();
 
         DataInputStream in = getInput("service.TreeResponse.bin");
-        assert AntiEntropyService.TreeResponseVerbHandler.SERIALIZER.deserialize(in, getVersion()) != null;
-        assert AntiEntropyService.TreeResponseVerbHandler.SERIALIZER.deserialize(in, getVersion()) != null;
-        assert messageSerializer.deserialize(in, getVersion()) != null;
-        assert messageSerializer.deserialize(in, getVersion()) != null;
+        assert AntiEntropyService.Validator.serializer.deserialize(in, getVersion()) != null;
+        assert AntiEntropyService.Validator.serializer.deserialize(in, getVersion()) != null;
+        assert MessageIn.read(in, getVersion(), "id") != null;
+        assert MessageIn.read(in, getVersion(), "id") != null;
         in.close();
     }
 

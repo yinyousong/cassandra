@@ -17,16 +17,17 @@
  */
 package org.apache.cassandra.streaming;
 
-import java.io.*;
+import java.io.DataInput;
+import java.io.DataOutput;
+import java.io.IOException;
 
+import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.io.IVersionedSerializer;
-import org.apache.cassandra.io.util.FastByteArrayOutputStream;
-import org.apache.cassandra.net.Message;
-import org.apache.cassandra.net.MessageProducer;
-import org.apache.cassandra.service.StorageService;
+import org.apache.cassandra.net.MessageOut;
+import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.utils.FBUtilities;
 
-class StreamReply implements MessageProducer
+public class StreamReply
 {
     static enum Status
     {
@@ -49,12 +50,9 @@ class StreamReply implements MessageProducer
         this.sessionId = sessionId;
     }
 
-    public Message getMessage(Integer version) throws IOException
+    public MessageOut<StreamReply> createMessage()
     {
-        FastByteArrayOutputStream bos = new FastByteArrayOutputStream();
-        DataOutputStream dos = new DataOutputStream( bos );
-        serializer.serialize(this, dos, version);
-        return new Message(FBUtilities.getBroadcastAddress(), StorageService.Verb.STREAM_REPLY, bos.toByteArray(), version);
+        return new MessageOut<StreamReply>(MessagingService.Verb.STREAM_REPLY, this, serializer);
     }
 
     @Override
@@ -84,9 +82,9 @@ class StreamReply implements MessageProducer
             return new StreamReply(targetFile, sessionId, action);
         }
 
-        public long serializedSize(StreamReply streamReply, int version)
+        public long serializedSize(StreamReply reply, int version)
         {
-            throw new UnsupportedOperationException();
+            return TypeSizes.NATIVE.sizeof(reply.sessionId) + FBUtilities.serializedUTF8Size(reply.file) + TypeSizes.NATIVE.sizeof(reply.action.ordinal());
         }
     }
 }

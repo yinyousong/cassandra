@@ -17,6 +17,8 @@
  */
 package org.apache.cassandra.net;
 
+import java.io.DataInput;
+import java.io.DataOutput;
 import java.io.IOError;
 import java.io.IOException;
 import java.lang.management.ManagementFactory;
@@ -27,7 +29,6 @@ import java.nio.channels.ServerSocketChannel;
 import java.util.*;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -36,7 +37,6 @@ import javax.management.ObjectName;
 
 import com.google.common.base.Function;
 import com.google.common.collect.Lists;
-import org.apache.cassandra.concurrent.NamedThreadFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -46,17 +46,22 @@ import org.apache.cassandra.concurrent.StageManager;
 import org.apache.cassandra.config.ConfigurationException;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.EncryptionOptions;
-import org.apache.cassandra.db.RowMutation;
-import org.apache.cassandra.gms.Gossiper;
+import org.apache.cassandra.db.*;
+import org.apache.cassandra.dht.BootStrapper;
+import org.apache.cassandra.gms.GossipDigestAck;
+import org.apache.cassandra.gms.GossipDigestAck2;
+import org.apache.cassandra.gms.GossipDigestSyn;
+import org.apache.cassandra.io.IVersionedSerializer;
 import org.apache.cassandra.io.util.DataOutputBuffer;
 import org.apache.cassandra.locator.ILatencySubscriber;
 import org.apache.cassandra.net.io.SerializerType;
 import org.apache.cassandra.net.sink.SinkManager;
 import org.apache.cassandra.security.SSLFactory;
+import org.apache.cassandra.service.AntiEntropyService;
+import org.apache.cassandra.service.MigrationManager;
 import org.apache.cassandra.service.StorageProxy;
 import org.apache.cassandra.service.StorageService;
-import org.apache.cassandra.streaming.FileStreamTask;
-import org.apache.cassandra.streaming.StreamHeader;
+import org.apache.cassandra.streaming.*;
 import org.apache.cassandra.utils.*;
 import org.cliffc.high_scale_lib.NonBlockingHashMap;
 
@@ -78,11 +83,164 @@ public final class MessagingService implements MessagingServiceMBean
     /** we preface every message with this number so the recipient can validate the sender is sane */
     static final int PROTOCOL_MAGIC = 0xCA552DFA;
 
+    /* All verb handler identifiers */
+    public enum Verb
+    {
+        MUTATION,
+        @Deprecated BINARY,
+        READ_REPAIR,
+        READ,
+        REQUEST_RESPONSE, // client-initiated reads and writes
+        @Deprecated STREAM_INITIATE,
+        @Deprecated STREAM_INITIATE_DONE,
+        STREAM_REPLY,
+        STREAM_REQUEST,
+        RANGE_SLICE,
+        BOOTSTRAP_TOKEN,
+        TREE_REQUEST,
+        TREE_RESPONSE,
+        @Deprecated JOIN,
+        GOSSIP_DIGEST_SYN,
+        GOSSIP_DIGEST_ACK,
+        GOSSIP_DIGEST_ACK2,
+        @Deprecated DEFINITIONS_ANNOUNCE,
+        DEFINITIONS_UPDATE,
+        TRUNCATE,
+        SCHEMA_CHECK,
+        @Deprecated INDEX_SCAN,
+        REPLICATION_FINISHED,
+        INTERNAL_RESPONSE, // responses to internal calls
+        COUNTER_MUTATION,
+        STREAMING_REPAIR_REQUEST,
+        STREAMING_REPAIR_RESPONSE,
+        SNAPSHOT, // Similar to nt snapshot
+        MIGRATION_REQUEST,
+        GOSSIP_SHUTDOWN,
+        // use as padding for backwards compatability where a previous version needs to validate a verb from the future.
+        UNUSED_1,
+        UNUSED_2,
+        UNUSED_3,
+        ;
+        // remember to add new verbs at the end, since we serialize by ordinal
+    }
+    public static final Verb[] VERBS = Verb.values();
+
+    public static final EnumMap<MessagingService.Verb, Stage> verbStages = new EnumMap<MessagingService.Verb, Stage>(MessagingService.Verb.class)
+    {{
+        put(Verb.MUTATION, Stage.MUTATION);
+        put(Verb.BINARY, Stage.MUTATION);
+        put(Verb.READ_REPAIR, Stage.MUTATION);
+        put(Verb.TRUNCATE, Stage.MUTATION);
+        put(Verb.READ, Stage.READ);
+        put(Verb.REQUEST_RESPONSE, Stage.REQUEST_RESPONSE);
+        put(Verb.STREAM_REPLY, Stage.MISC); // TODO does this really belong on misc? I've just copied old behavior here
+        put(Verb.STREAM_REQUEST, Stage.STREAM);
+        put(Verb.RANGE_SLICE, Stage.READ);
+        put(Verb.BOOTSTRAP_TOKEN, Stage.MISC);
+        put(Verb.TREE_REQUEST, Stage.ANTI_ENTROPY);
+        put(Verb.TREE_RESPONSE, Stage.ANTI_ENTROPY);
+        put(Verb.STREAMING_REPAIR_REQUEST, Stage.ANTI_ENTROPY);
+        put(Verb.STREAMING_REPAIR_RESPONSE, Stage.ANTI_ENTROPY);
+        put(Verb.GOSSIP_DIGEST_ACK, Stage.GOSSIP);
+        put(Verb.GOSSIP_DIGEST_ACK2, Stage.GOSSIP);
+        put(Verb.GOSSIP_DIGEST_SYN, Stage.GOSSIP);
+        put(Verb.GOSSIP_SHUTDOWN, Stage.GOSSIP);
+        put(Verb.DEFINITIONS_UPDATE, Stage.MIGRATION);
+        put(Verb.SCHEMA_CHECK, Stage.MIGRATION);
+        put(Verb.MIGRATION_REQUEST, Stage.MIGRATION);
+        put(Verb.INDEX_SCAN, Stage.READ);
+        put(Verb.REPLICATION_FINISHED, Stage.MISC);
+        put(Verb.INTERNAL_RESPONSE, Stage.INTERNAL_RESPONSE);
+        put(Verb.COUNTER_MUTATION, Stage.MUTATION);
+        put(Verb.SNAPSHOT, Stage.MISC);
+        put(Verb.UNUSED_1, Stage.INTERNAL_RESPONSE);
+        put(Verb.UNUSED_2, Stage.INTERNAL_RESPONSE);
+        put(Verb.UNUSED_3, Stage.INTERNAL_RESPONSE);
+    }};
+
+    /**
+     * Messages we receive in IncomingTcpConnection have a Verb that tells us what kind of message it is.
+     * Most of the time, this is enough to determine how to deserialize the message payload.
+     * The exception is the REQUEST_RESPONSE verb, which just means "a reply to something you told me to do."
+     * Traditionally, this was fine since each VerbHandler knew what type of payload it expected, and
+     * handled the deserialization itself.  Now that we do that in ITC, to avoid the extra copy to an
+     * intermediary byte[] (See CASSANDRA-3716), we need to wire that up to the CallbackInfo object
+     * (see below).
+     */
+    public static final EnumMap<Verb, IVersionedSerializer<?>> verbSerializers = new EnumMap<Verb, IVersionedSerializer<?>>(Verb.class)
+    {{
+        put(Verb.REQUEST_RESPONSE, CallbackDeterminedSerializer.instance);
+        put(Verb.INTERNAL_RESPONSE, CallbackDeterminedSerializer.instance);
+
+        put(Verb.MUTATION, RowMutation.serializer);
+        put(Verb.READ_REPAIR, RowMutation.serializer);
+        put(Verb.READ, ReadCommand.serializer);
+        put(Verb.STREAM_REPLY, StreamReply.serializer);
+        put(Verb.STREAM_REQUEST, StreamRequest.serializer);
+        put(Verb.RANGE_SLICE, RangeSliceCommand.serializer);
+        put(Verb.BOOTSTRAP_TOKEN, BootStrapper.StringSerializer.instance);
+        put(Verb.TREE_REQUEST, AntiEntropyService.TreeRequest.serializer);
+        put(Verb.TREE_RESPONSE, AntiEntropyService.Validator.serializer);
+        put(Verb.STREAMING_REPAIR_REQUEST, StreamingRepairTask.serializer);
+        put(Verb.STREAMING_REPAIR_RESPONSE, UUIDGen.serializer);
+        put(Verb.GOSSIP_DIGEST_ACK, GossipDigestAck.serializer);
+        put(Verb.GOSSIP_DIGEST_ACK2, GossipDigestAck2.serializer);
+        put(Verb.GOSSIP_DIGEST_SYN, GossipDigestSyn.serializer);
+        put(Verb.DEFINITIONS_UPDATE, MigrationManager.MigrationsSerializer.instance);
+        put(Verb.TRUNCATE, Truncation.serializer);
+        put(Verb.INDEX_SCAN, IndexScanCommand.serializer);
+        put(Verb.REPLICATION_FINISHED, null);
+        put(Verb.COUNTER_MUTATION, CounterMutation.serializer);
+    }};
+
+    /**
+     * A Map of what kind of serializer to wire up to a REQUEST_RESPONSE callback, based on outbound Verb.
+     */
+    public static final EnumMap<Verb, IVersionedSerializer<?>> callbackDeserializers = new EnumMap<Verb, IVersionedSerializer<?>>(Verb.class)
+    {{
+        put(Verb.MUTATION, WriteResponse.serializer);
+        put(Verb.READ_REPAIR, WriteResponse.serializer);
+        put(Verb.COUNTER_MUTATION, WriteResponse.serializer);
+        put(Verb.RANGE_SLICE, RangeSliceReply.serializer);
+        put(Verb.READ, ReadResponse.serializer);
+        put(Verb.TRUNCATE, TruncateResponse.serializer);
+        put(Verb.SNAPSHOT, null);
+
+        put(Verb.MIGRATION_REQUEST, MigrationManager.MigrationsSerializer.instance);
+        put(Verb.SCHEMA_CHECK, UUIDGen.serializer);
+        put(Verb.BOOTSTRAP_TOKEN, BootStrapper.StringSerializer.instance);
+        put(Verb.REPLICATION_FINISHED, null);
+    }};
+
     /* This records all the results mapped by message Id */
     private final ExpiringMap<String, CallbackInfo> callbacks;
 
+    /**
+     * a placeholder class that means "deserialize using the callback." We can't implement this without
+     * special-case code in InboundTcpConnection because there is no way to pass the message id to IVersionedSerializer.
+     */
+    static class CallbackDeterminedSerializer implements IVersionedSerializer<Object>
+    {
+        public static final CallbackDeterminedSerializer instance = new CallbackDeterminedSerializer();
+
+        public Object deserialize(DataInput in, int version) throws IOException
+        {
+            throw new UnsupportedOperationException();
+        }
+
+        public void serialize(Object o, DataOutput out, int version) throws IOException
+        {
+            throw new UnsupportedOperationException();
+        }
+
+        public long serializedSize(Object o, int version)
+        {
+            throw new UnsupportedOperationException();
+        }
+    }
+
     /* Lookup table for registering message handlers based on the verb. */
-    private final Map<StorageService.Verb, IVerbHandler> verbHandlers;
+    private final Map<Verb, IVerbHandler> verbHandlers;
 
     /** One executor per destination InetAddress for streaming.
      *
@@ -112,18 +270,18 @@ public final class MessagingService implements MessagingServiceMBean
      * all correspond to client requests or something triggered by them; we don't want to
      * drop internal messages like bootstrap or repair notifications.
      */
-    public static final EnumSet<StorageService.Verb> DROPPABLE_VERBS = EnumSet.of(StorageService.Verb.BINARY,
-                                                                                  StorageService.Verb.MUTATION,
-                                                                                  StorageService.Verb.READ_REPAIR,
-                                                                                  StorageService.Verb.READ,
-                                                                                  StorageService.Verb.RANGE_SLICE,
-                                                                                  StorageService.Verb.REQUEST_RESPONSE);
+    public static final EnumSet<Verb> DROPPABLE_VERBS = EnumSet.of(Verb.BINARY,
+                                                                                  Verb.MUTATION,
+                                                                                  Verb.READ_REPAIR,
+                                                                                  Verb.READ,
+                                                                                  Verb.RANGE_SLICE,
+                                                                                  Verb.REQUEST_RESPONSE);
 
     // total dropped message counts for server lifetime
-    private final Map<StorageService.Verb, AtomicInteger> droppedMessages = new EnumMap<StorageService.Verb, AtomicInteger>(StorageService.Verb.class);
+    private final Map<Verb, AtomicInteger> droppedMessages = new EnumMap<Verb, AtomicInteger>(Verb.class);
     // dropped count when last requested for the Recent api.  high concurrency isn't necessary here.
-    private final Map<StorageService.Verb, Integer> lastDropped = Collections.synchronizedMap(new EnumMap<StorageService.Verb, Integer>(StorageService.Verb.class));
-    private final Map<StorageService.Verb, Integer> lastDroppedInternal = new EnumMap<StorageService.Verb, Integer>(StorageService.Verb.class);
+    private final Map<Verb, Integer> lastDropped = Collections.synchronizedMap(new EnumMap<Verb, Integer>(Verb.class));
+    private final Map<Verb, Integer> lastDroppedInternal = new EnumMap<Verb, Integer>(Verb.class);
 
     private long totalTimeouts = 0;
     private long recentTotalTimeouts = 0;
@@ -143,7 +301,7 @@ public final class MessagingService implements MessagingServiceMBean
 
     private MessagingService()
     {
-        for (StorageService.Verb verb : DROPPABLE_VERBS)
+        for (Verb verb : DROPPABLE_VERBS)
         {
             droppedMessages.put(verb, new AtomicInteger());
             lastDropped.put(verb, 0);
@@ -151,7 +309,7 @@ public final class MessagingService implements MessagingServiceMBean
         }
 
         listenGate = new SimpleCondition();
-        verbHandlers = new EnumMap<StorageService.Verb, IVerbHandler>(StorageService.Verb.class);
+        verbHandlers = new EnumMap<Verb, IVerbHandler>(Verb.class);
         Runnable logDropped = new Runnable()
         {
             public void run()
@@ -183,16 +341,9 @@ public final class MessagingService implements MessagingServiceMBean
 
                 if (expiredCallbackInfo.shouldHint())
                 {
-                    assert expiredCallbackInfo.message != null;
-                    try
-                    {
-                        RowMutation rm = RowMutation.fromBytes(expiredCallbackInfo.message.getMessageBody(), expiredCallbackInfo.message.getVersion());
-                        return StorageProxy.scheduleLocalHint(rm, expiredCallbackInfo.target, null, null);
-                    }
-                    catch (IOException e)
-                    {
-                        logger.error("Unable to deserialize mutation when writting hint for: " + expiredCallbackInfo.target);
-                    }
+                    assert expiredCallbackInfo.sentMessage != null;
+                    RowMutation rm = (RowMutation) expiredCallbackInfo.sentMessage.payload;
+                    return StorageProxy.scheduleLocalHint(rm, expiredCallbackInfo.target, null, null);
                 }
 
                 return null;
@@ -309,7 +460,7 @@ public final class MessagingService implements MessagingServiceMBean
         return cp;
     }
 
-    public OutboundTcpConnection getConnection(InetAddress to, Message msg)
+    public OutboundTcpConnection getConnection(InetAddress to, MessageOut msg)
     {
         return getConnectionPool(to).getConnection(msg);
     }
@@ -320,7 +471,7 @@ public final class MessagingService implements MessagingServiceMBean
      * @param verb
      * @param verbHandler handler for the specified verb
      */
-    public void registerVerbHandlers(StorageService.Verb verb, IVerbHandler verbHandler)
+    public void registerVerbHandlers(Verb verb, IVerbHandler verbHandler)
     {
         assert !verbHandlers.containsKey(verb);
         verbHandlers.put(verb, verbHandler);
@@ -332,26 +483,26 @@ public final class MessagingService implements MessagingServiceMBean
      * @param type for which the verb handler is sought
      * @return a reference to IVerbHandler which is the handler for the specified verb
      */
-    public IVerbHandler getVerbHandler(StorageService.Verb type)
+    public IVerbHandler getVerbHandler(Verb type)
     {
         return verbHandlers.get(type);
     }
 
-    public String addCallback(IMessageCallback cb, Message message, InetAddress to)
+    public String addCallback(IMessageCallback cb, MessageOut message, InetAddress to)
     {
         return addCallback(cb, message, to, DEFAULT_CALLBACK_TIMEOUT);
     }
 
-    public String addCallback(IMessageCallback cb, Message message, InetAddress to, long timeout)
+    public String addCallback(IMessageCallback cb, MessageOut message, InetAddress to, long timeout)
     {
         String messageId = nextId();
         CallbackInfo previous;
 
         // If HH is enabled and this is a mutation message => store the message to track for potential hints.
-        if (DatabaseDescriptor.hintedHandoffEnabled() && message.getVerb() == StorageService.Verb.MUTATION)
-            previous = callbacks.put(messageId, new CallbackInfo(to, cb, message), timeout);
+        if (DatabaseDescriptor.hintedHandoffEnabled() && message.verb == Verb.MUTATION)
+            previous = callbacks.put(messageId, new CallbackInfo(to, cb, message, callbackDeserializers.get(message.verb)), timeout);
         else
-            previous = callbacks.put(messageId, new CallbackInfo(to, cb), timeout);
+            previous = callbacks.put(messageId, new CallbackInfo(to, cb, callbackDeserializers.get(message.verb)), timeout);
 
         assert previous == null;
         return messageId;
@@ -367,7 +518,7 @@ public final class MessagingService implements MessagingServiceMBean
     /*
      * @see #sendRR(Message message, InetAddress to, IMessageCallback cb, long timeout)
      */
-    public String sendRR(Message message, InetAddress to, IMessageCallback cb)
+    public String sendRR(MessageOut message, InetAddress to, IMessageCallback cb)
     {
         return sendRR(message, to, cb, DEFAULT_CALLBACK_TIMEOUT);
     }
@@ -385,41 +536,21 @@ public final class MessagingService implements MessagingServiceMBean
      * @param timeout the timeout used for expiration
      * @return an reference to message id used to match with the result
      */
-    public String sendRR(Message message, InetAddress to, IMessageCallback cb, long timeout)
+    public String sendRR(MessageOut message, InetAddress to, IMessageCallback cb, long timeout)
     {
         String id = addCallback(cb, message, to, timeout);
         sendOneWay(message, id, to);
         return id;
     }
 
-    public void sendOneWay(Message message, InetAddress to)
+    public void sendOneWay(MessageOut message, InetAddress to)
     {
         sendOneWay(message, nextId(), to);
     }
 
-    public void sendReply(Message message, String id, InetAddress to)
+    public void sendReply(MessageOut message, String id, InetAddress to)
     {
         sendOneWay(message, id, to);
-    }
-
-    /**
-     * Send a message to a given endpoint. similar to sendRR(Message, InetAddress, IAsyncCallback)
-     * @param producer pro
-     * @param to endpoing to which the message needs to be sent
-     * @param cb callback that processes responses.
-     * @return a reference to the message id use to match with the result.
-     */
-    public String sendRR(MessageProducer producer, InetAddress to, IAsyncCallback cb)
-    {
-        try
-        {
-            return sendRR(producer.getMessage(Gossiper.instance.getVersion(to)), to, cb);
-        }
-        catch (IOException ex)
-        {
-            // happened during message creation.
-            throw new IOError(ex);
-        }
     }
 
     /**
@@ -428,20 +559,16 @@ public final class MessagingService implements MessagingServiceMBean
      * @param message messages to be sent.
      * @param to endpoint to which the message needs to be sent
      */
-    public void sendOneWay(Message message, String id, InetAddress to)
+    public void sendOneWay(MessageOut message, String id, InetAddress to)
     {
         if (logger.isTraceEnabled())
-            logger.trace(FBUtilities.getBroadcastAddress() + " sending " + message.getVerb() + " to " + id + "@" + to);
+            logger.trace(FBUtilities.getBroadcastAddress() + " sending " + message.verb + " to " + id + "@" + to);
 
-        // do local deliveries
-        if ( message.getFrom().equals(to) )
-        {
-            receive(message, id);
-            return;
-        }
+        if (to.equals(FBUtilities.getBroadcastAddress()))
+            logger.debug("Message-to-self {} going over MessagingService", message);
 
         // message sinks are a testing hook
-        Message processedMessage = SinkManager.processClientMessage(message, id, to);
+        MessageOut processedMessage = SinkManager.processOutboundMessage(message, id, to);
         if (processedMessage == null)
         {
             return;
@@ -454,9 +581,9 @@ public final class MessagingService implements MessagingServiceMBean
         connection.enqueue(processedMessage, id);
     }
 
-    public IAsyncResult sendRR(Message message, InetAddress to)
+    public <T> IAsyncResult<T> sendRR(MessageOut message, InetAddress to)
     {
-        IAsyncResult iar = new AsyncResult();
+        IAsyncResult<T> iar = new AsyncResult();
         sendRR(message, to, iar);
         return iar;
     }
@@ -550,20 +677,30 @@ public final class MessagingService implements MessagingServiceMBean
         }
     }
 
-    public void receive(Message message, String id)
+    public void receive(MessageIn message, String id)
     {
         if (logger.isTraceEnabled())
-            logger.trace(FBUtilities.getBroadcastAddress() + " received " + message.getVerb()
-                          + " from " + id + "@" + message.getFrom());
+            logger.trace(FBUtilities.getBroadcastAddress() + " received " + message.verb
+                          + " from " + id + "@" + message.from);
 
-        message = SinkManager.processServerMessage(message, id);
+        message = SinkManager.processInboundMessage(message, id);
         if (message == null)
             return;
 
         Runnable runnable = new MessageDeliveryTask(message, id);
         ExecutorService stage = StageManager.getStage(message.getMessageType());
-        assert stage != null : "No stage for message type " + message.getVerb();
+        assert stage != null : "No stage for message type " + message.verb;
         stage.execute(runnable);
+    }
+
+    public void setCallbackForTests(String messageId, CallbackInfo callback)
+    {
+        callbacks.put(messageId, callback);
+    }
+
+    public CallbackInfo getRegisteredCallback(String messageId)
+    {
+        return callbacks.get(messageId);
     }
 
     public CallbackInfo removeRegisteredCallback(String messageId)
@@ -620,7 +757,7 @@ public final class MessagingService implements MessagingServiceMBean
         try
         {
             DataOutputBuffer buffer = new DataOutputBuffer();
-            StreamHeader.serializer().serialize(streamHeader, buffer, version);
+            StreamHeader.serializer.serialize(streamHeader, buffer, version);
             bytes = buffer.getData();
         }
         catch (IOException e)
@@ -638,7 +775,7 @@ public final class MessagingService implements MessagingServiceMBean
         return buffer;
     }
 
-    public void incrementDroppedMessages(StorageService.Verb verb)
+    public void incrementDroppedMessages(Verb verb)
     {
         assert DROPPABLE_VERBS.contains(verb) : "Verb " + verb + " should not legally be dropped";
         droppedMessages.get(verb).incrementAndGet();
@@ -647,10 +784,10 @@ public final class MessagingService implements MessagingServiceMBean
     private void logDroppedMessages()
     {
         boolean logTpstats = false;
-        for (Map.Entry<StorageService.Verb, AtomicInteger> entry : droppedMessages.entrySet())
+        for (Map.Entry<Verb, AtomicInteger> entry : droppedMessages.entrySet())
         {
             AtomicInteger dropped = entry.getValue();
-            StorageService.Verb verb = entry.getKey();
+            Verb verb = entry.getKey();
             int recent = dropped.get() - lastDroppedInternal.get(verb);
             if (recent > 0)
             {
@@ -757,7 +894,7 @@ public final class MessagingService implements MessagingServiceMBean
     public Map<String, Integer> getDroppedMessages()
     {
         Map<String, Integer> map = new HashMap<String, Integer>();
-        for (Map.Entry<StorageService.Verb, AtomicInteger> entry : droppedMessages.entrySet())
+        for (Map.Entry<Verb, AtomicInteger> entry : droppedMessages.entrySet())
             map.put(entry.getKey().toString(), entry.getValue().get());
         return map;
     }
@@ -765,9 +902,9 @@ public final class MessagingService implements MessagingServiceMBean
     public Map<String, Integer> getRecentlyDroppedMessages()
     {
         Map<String, Integer> map = new HashMap<String, Integer>();
-        for (Map.Entry<StorageService.Verb, AtomicInteger> entry : droppedMessages.entrySet())
+        for (Map.Entry<Verb, AtomicInteger> entry : droppedMessages.entrySet())
         {
-            StorageService.Verb verb = entry.getKey();
+            Verb verb = entry.getKey();
             Integer dropped = entry.getValue().get();
             Integer recentlyDropped = dropped - lastDropped.get(verb);
             map.put(verb.toString(), recentlyDropped);
@@ -810,5 +947,4 @@ public final class MessagingService implements MessagingServiceMBean
         }
         return result;
     }
-
 }

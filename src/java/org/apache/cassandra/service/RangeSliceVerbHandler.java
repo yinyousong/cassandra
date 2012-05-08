@@ -31,10 +31,10 @@ import org.apache.cassandra.db.Table;
 import org.apache.cassandra.db.filter.QueryFilter;
 import org.apache.cassandra.db.filter.IFilter;
 import org.apache.cassandra.net.IVerbHandler;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.MessageIn;
 import org.apache.cassandra.net.MessagingService;
 
-public class RangeSliceVerbHandler implements IVerbHandler
+public class RangeSliceVerbHandler implements IVerbHandler<RangeSliceCommand>
 {
     private static final Logger logger = LoggerFactory.getLogger(RangeSliceVerbHandler.class);
 
@@ -49,7 +49,7 @@ public class RangeSliceVerbHandler implements IVerbHandler
             return cfs.getRangeSlice(command.super_column, command.range, command.maxResults, columnFilter, command.row_filter, command.maxIsColumns, command.isPaging);
     }
 
-    public void doVerb(Message message, String id)
+    public void doVerb(MessageIn<RangeSliceCommand> message, String id)
     {
         try
         {
@@ -58,12 +58,10 @@ public class RangeSliceVerbHandler implements IVerbHandler
                 /* Don't service reads! */
                 throw new RuntimeException("Cannot service reads while bootstrapping!");
             }
-            RangeSliceCommand command = RangeSliceCommand.read(message);
-            RangeSliceReply reply = new RangeSliceReply(executeLocally(command));
-            Message response = reply.getReply(message);
+            RangeSliceReply reply = new RangeSliceReply(executeLocally(message.payload));
             if (logger.isDebugEnabled())
-                logger.debug("Sending " + reply+ " to " + id + "@" + message.getFrom());
-            MessagingService.instance().sendReply(response, id, message.getFrom());
+                logger.debug("Sending " + reply+ " to " + id + "@" + message.from);
+            MessagingService.instance().sendReply(reply.createMessage(), id, message.from);
         }
         catch (Exception ex)
         {
