@@ -17,30 +17,23 @@
  */
 package org.apache.cassandra.db;
 
-import java.io.DataInputStream;
 import java.io.IOError;
 import java.io.IOException;
 
-import org.apache.cassandra.io.util.FastByteArrayInputStream;
 import org.apache.cassandra.net.IVerbHandler;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.MessageIn;
 import org.apache.cassandra.net.MessagingService;
 
-public class ReadRepairVerbHandler implements IVerbHandler
+public class ReadRepairVerbHandler implements IVerbHandler<RowMutation>
 {
-    public void doVerb(Message message, String id)
+    public void doVerb(MessageIn<RowMutation> message, String id)
     {
-        byte[] body = message.getMessageBody();
-        FastByteArrayInputStream buffer = new FastByteArrayInputStream(body);
-
         try
         {
-            RowMutation rm = RowMutation.serializer().deserialize(new DataInputStream(buffer), message.getVersion());
+            RowMutation rm = message.payload;
             rm.apply();
-
             WriteResponse response = new WriteResponse(rm.getTable(), rm.key(), true);
-            Message responseMessage = WriteResponse.makeWriteResponseMessage(message, response);
-            MessagingService.instance().sendReply(responseMessage, id, message.getFrom());
+            MessagingService.instance().sendReply(response.createMessage(), id, message.from);
         }
         catch (IOException e)
         {

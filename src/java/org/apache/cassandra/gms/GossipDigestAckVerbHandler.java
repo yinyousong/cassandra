@@ -17,8 +17,6 @@
  */
 package org.apache.cassandra.gms;
 
-import java.io.DataInputStream;
-import java.io.IOException;
 import java.net.InetAddress;
 import java.util.HashMap;
 import java.util.List;
@@ -27,18 +25,18 @@ import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.cassandra.io.util.FastByteArrayInputStream;
 import org.apache.cassandra.net.IVerbHandler;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.MessageIn;
+import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
 
-public class GossipDigestAckVerbHandler implements IVerbHandler
+public class GossipDigestAckVerbHandler implements IVerbHandler<GossipDigestAck>
 {
     private static final Logger logger = LoggerFactory.getLogger(GossipDigestAckVerbHandler.class);
 
-    public void doVerb(Message message, String id)
+    public void doVerb(MessageIn<GossipDigestAck> message, String id)
     {
-        InetAddress from = message.getFrom();
+        InetAddress from = message.from;
         if (logger.isTraceEnabled())
             logger.trace("Received a GossipDigestAckMessage from {}", from);
         if (!Gossiper.instance.isEnabled())
@@ -48,41 +46,32 @@ public class GossipDigestAckVerbHandler implements IVerbHandler
             return;
         }
 
-        byte[] bytes = message.getMessageBody();
-        DataInputStream dis = new DataInputStream( new FastByteArrayInputStream(bytes) );
+        GossipDigestAck gDigestAckMessage = message.payload;
+        List<GossipDigest> gDigestList = gDigestAckMessage.getGossipDigestList();
+        Map<InetAddress, EndpointState> epStateMap = gDigestAckMessage.getEndpointStateMap();
 
-        try
+        if ( epStateMap.size() > 0 )
         {
-            GossipDigestAckMessage gDigestAckMessage = GossipDigestAckMessage.serializer().deserialize(dis, message.getVersion());
-            List<GossipDigest> gDigestList = gDigestAckMessage.getGossipDigestList();
-            Map<InetAddress, EndpointState> epStateMap = gDigestAckMessage.getEndpointStateMap();
-
-            if ( epStateMap.size() > 0 )
-            {
-                /* Notify the Failure Detector */
-                Gossiper.instance.notifyFailureDetector(epStateMap);
-                Gossiper.instance.applyStateLocally(epStateMap);
-            }
-
-            /* Get the state required to send to this gossipee - construct GossipDigestAck2Message */
-            Map<InetAddress, EndpointState> deltaEpStateMap = new HashMap<InetAddress, EndpointState>();
-            for( GossipDigest gDigest : gDigestList )
-            {
-                InetAddress addr = gDigest.getEndpoint();
-                EndpointState localEpStatePtr = Gossiper.instance.getStateForVersionBiggerThan(addr, gDigest.getMaxVersion());
-                if ( localEpStatePtr != null )
-                    deltaEpStateMap.put(addr, localEpStatePtr);
-            }
-
-            GossipDigestAck2Message gDigestAck2 = new GossipDigestAck2Message(deltaEpStateMap);
-            Message gDigestAck2Message = Gossiper.instance.makeGossipDigestAck2Message(gDigestAck2, message.getVersion());
-            if (logger.isTraceEnabled())
-                logger.trace("Sending a GossipDigestAck2Message to {}", from);
-            MessagingService.instance().sendOneWay(gDigestAck2Message, from);
+            /* Notify the Failure Detector */
+            Gossiper.instance.notifyFailureDetector(epStateMap);
+            Gossiper.instance.applyStateLocally(epStateMap);
         }
-        catch ( IOException e )
+
+        /* Get the state required to send to this gossipee - construct GossipDigestAck2Message */
+        Map<InetAddress, EndpointState> deltaEpStateMap = new HashMap<InetAddress, EndpointState>();
+        for( GossipDigest gDigest : gDigestList )
         {
-            throw new RuntimeException(e);
+            InetAddress addr = gDigest.getEndpoint();
+            EndpointState localEpStatePtr = Gossiper.instance.getStateForVersionBiggerThan(addr, gDigest.getMaxVersion());
+            if ( localEpStatePtr != null )
+                deltaEpStateMap.put(addr, localEpStatePtr);
         }
+
+        MessageOut<GossipDigestAck2> gDigestAck2Message = new MessageOut<GossipDigestAck2>(MessagingService.Verb.GOSSIP_DIGEST_ACK2,
+                                                                                                         new GossipDigestAck2(deltaEpStateMap),
+                                                                                                         GossipDigestAck2.serializer);
+        if (logger.isTraceEnabled())
+            logger.trace("Sending a GossipDigestAck2Message to {}", from);
+        MessagingService.instance().sendOneWay(gDigestAck2Message, from);
     }
 }

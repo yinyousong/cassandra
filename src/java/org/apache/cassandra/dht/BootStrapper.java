@@ -17,34 +17,32 @@
  */
 package org.apache.cassandra.dht;
 
- import java.io.IOException;
- import java.net.InetAddress;
- import java.util.*;
- import java.util.concurrent.TimeUnit;
- import java.util.concurrent.locks.Condition;
+import java.io.DataInput;
+import java.io.DataOutput;
+import java.io.IOException;
+import java.net.InetAddress;
+import java.util.*;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Condition;
 
- import com.google.common.base.Charsets;
- import org.apache.cassandra.config.Schema;
- import org.apache.cassandra.gms.Gossiper;
- import org.apache.commons.lang.ArrayUtils;
- import org.slf4j.Logger;
- import org.slf4j.LoggerFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
- import org.apache.cassandra.config.ConfigurationException;
- import org.apache.cassandra.config.DatabaseDescriptor;
- import org.apache.cassandra.db.Table;
- import org.apache.cassandra.gms.FailureDetector;
- import org.apache.cassandra.locator.AbstractReplicationStrategy;
- import org.apache.cassandra.locator.TokenMetadata;
- import org.apache.cassandra.net.IAsyncCallback;
- import org.apache.cassandra.net.IVerbHandler;
- import org.apache.cassandra.net.Message;
- import org.apache.cassandra.net.MessagingService;
- import org.apache.cassandra.service.StorageService;
- import org.apache.cassandra.streaming.OperationType;
- import org.apache.cassandra.utils.FBUtilities;
+import org.apache.cassandra.config.ConfigurationException;
+import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.config.Schema;
+import org.apache.cassandra.db.Table;
+import org.apache.cassandra.gms.FailureDetector;
+import org.apache.cassandra.io.IVersionedSerializer;
+import org.apache.cassandra.locator.AbstractReplicationStrategy;
+import org.apache.cassandra.locator.TokenMetadata;
+import org.apache.cassandra.net.*;
+import org.apache.cassandra.service.StorageService;
+import org.apache.cassandra.streaming.OperationType;
+import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.SimpleCondition;
 
+import static org.apache.cassandra.utils.FBUtilities.serializedUTF8Size;
 
 public class BootStrapper
 {
@@ -184,10 +182,7 @@ public class BootStrapper
     @Deprecated
     static Token<?> getBootstrapTokenFrom(InetAddress maxEndpoint)
     {
-        Message message = new Message(FBUtilities.getBroadcastAddress(),
-                                      StorageService.Verb.BOOTSTRAP_TOKEN,
-                                      ArrayUtils.EMPTY_BYTE_ARRAY,
-                                      Gossiper.instance.getVersion(maxEndpoint));
+        MessageOut message = new MessageOut(MessagingService.Verb.BOOTSTRAP_TOKEN);
         int retries = 5;
         long timeout = Math.max(MessagingService.getDefaultCallbackTimeout(), BOOTSTRAP_TIMEOUT);
 
@@ -207,17 +202,17 @@ public class BootStrapper
     @Deprecated
     public static class BootstrapTokenVerbHandler implements IVerbHandler
     {
-        public void doVerb(Message message, String id)
+        public void doVerb(MessageIn message, String id)
         {
             StorageService ss = StorageService.instance;
             String tokenString = StorageService.getPartitioner().getTokenFactory().toString(ss.getBootstrapToken());
-            Message response = message.getInternalReply(tokenString.getBytes(Charsets.UTF_8), message.getVersion());
-            MessagingService.instance().sendReply(response, id, message.getFrom());
+            MessageOut<String> response = new MessageOut<String>(MessagingService.Verb.INTERNAL_RESPONSE, tokenString, StringSerializer.instance);
+            MessagingService.instance().sendReply(response, id, message.from);
         }
     }
 
     @Deprecated
-    private static class BootstrapTokenCallback implements IAsyncCallback
+    private static class BootstrapTokenCallback implements IAsyncCallback<String>
     {
         private volatile Token<?> token;
         private final Condition condition = new SimpleCondition();
@@ -237,15 +232,35 @@ public class BootStrapper
             return success ? token : null;
         }
 
-        public void response(Message msg)
+        public void response(MessageIn<String> msg)
         {
-            token = StorageService.getPartitioner().getTokenFactory().fromString(new String(msg.getMessageBody(), Charsets.UTF_8));
+            token = StorageService.getPartitioner().getTokenFactory().fromString(msg.payload);
             condition.signalAll();
         }
 
         public boolean isLatencyForSnitch()
         {
             return false;
+        }
+    }
+
+    public static class StringSerializer implements IVersionedSerializer<String>
+    {
+        public static final StringSerializer instance = new StringSerializer();
+
+        public void serialize(String s, DataOutput out, int version) throws IOException
+        {
+            out.writeUTF(s);
+        }
+
+        public String deserialize(DataInput in, int version) throws IOException
+        {
+            return in.readUTF();
+        }
+
+        public long serializedSize(String s, int version)
+        {
+            return serializedUTF8Size(s);
         }
     }
 }
