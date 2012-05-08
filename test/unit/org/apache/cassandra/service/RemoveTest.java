@@ -22,6 +22,7 @@ package org.apache.cassandra.service;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -40,7 +41,8 @@ import org.apache.cassandra.dht.RandomPartitioner;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.gms.Gossiper;
 import org.apache.cassandra.locator.TokenMetadata;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.MessageIn;
+import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.net.sink.IMessageSink;
 import org.apache.cassandra.net.sink.SinkManager;
@@ -152,7 +154,7 @@ public class RemoveTest
 
         for (InetAddress host : hosts)
         {
-            Message msg = new Message(host, StorageService.Verb.REPLICATION_FINISHED, new byte[0], MessagingService.current_version);
+            MessageOut msg = new MessageOut(host, MessagingService.Verb.REPLICATION_FINISHED, null, null, Collections.<String, byte[]>emptyMap());
             MessagingService.instance().sendRR(msg, FBUtilities.getBroadcastAddress());
         }
 
@@ -162,16 +164,24 @@ public class RemoveTest
         assertTrue(tmd.getLeavingEndpoints().isEmpty());
     }
 
+    /**
+     * sink that captures STREAM_REQUEST messages and calls finishStreamRequest on it
+     */
     class ReplicationSink implements IMessageSink
     {
-        public Message handleMessage(Message msg, String id, InetAddress to)
+        public MessageIn handleMessage(MessageIn msg, String id, InetAddress to)
         {
-            if (!msg.getVerb().equals(StorageService.Verb.STREAM_REQUEST))
+            if (!msg.verb.equals(MessagingService.Verb.STREAM_REQUEST))
                 return msg;
 
             StreamUtil.finishStreamRequest(msg, to);
 
             return null;
+        }
+
+        public MessageOut handleMessage(MessageOut msg, String id, InetAddress to)
+        {
+            return msg;
         }
     }
 }
