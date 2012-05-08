@@ -24,7 +24,7 @@ import java.io.Serializable;
 import java.nio.ByteBuffer;
 
 import org.apache.cassandra.config.ConfigurationException;
-import org.apache.cassandra.db.DBTypeSizes;
+import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.db.RowPosition;
 import org.apache.cassandra.io.ISerializer;
 import org.apache.cassandra.service.StorageService;
@@ -34,11 +34,7 @@ public abstract class Token<T> implements RingPosition<Token<T>>, Serializable
 {
     private static final long serialVersionUID = 1L;
 
-    private static final TokenSerializer serializer = new TokenSerializer();
-    public static TokenSerializer serializer()
-    {
-        return serializer;
-    }
+    public static final TokenSerializer serializer = new TokenSerializer();
 
     public final T token;
 
@@ -103,9 +99,11 @@ public abstract class Token<T> implements RingPosition<Token<T>>, Serializable
             return p.getTokenFactory().fromByteArray(ByteBuffer.wrap(bytes));
         }
 
-        public long serializedSize(Token object, DBTypeSizes typeSizes)
+        public long serializedSize(Token object, TypeSizes typeSizes)
         {
-            throw new UnsupportedOperationException();
+            IPartitioner p = StorageService.getPartitioner();
+            ByteBuffer b = p.getTokenFactory().toByteArray(object);
+            return TypeSizes.NATIVE.sizeof(b.remaining()) + b.remaining();
         }
     }
 

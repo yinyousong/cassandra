@@ -35,21 +35,18 @@
 
 package org.apache.cassandra.db;
 
-import java.io.*;
+import java.io.DataInput;
+import java.io.DataOutput;
+import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.List;
 
 import org.apache.cassandra.dht.AbstractBounds;
 import org.apache.cassandra.io.IVersionedSerializer;
-import org.apache.cassandra.io.util.DataOutputBuffer;
-import org.apache.cassandra.io.util.FastByteArrayInputStream;
-import org.apache.cassandra.net.Message;
-import org.apache.cassandra.net.MessageProducer;
+import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.service.IReadCommand;
-import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.thrift.ColumnParent;
 import org.apache.cassandra.thrift.IndexExpression;
 import org.apache.cassandra.thrift.SlicePredicate;
@@ -57,11 +54,12 @@ import org.apache.cassandra.thrift.TBinaryProtocol;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.thrift.TDeserializer;
+import org.apache.thrift.TException;
 import org.apache.thrift.TSerializer;
 
-public class RangeSliceCommand implements MessageProducer, IReadCommand
+public class RangeSliceCommand implements IReadCommand
 {
-    private static final RangeSliceCommandSerializer serializer = new RangeSliceCommandSerializer();
+    public static final RangeSliceCommandSerializer serializer = new RangeSliceCommandSerializer();
 
     public final String keyspace;
 
@@ -114,13 +112,9 @@ public class RangeSliceCommand implements MessageProducer, IReadCommand
         this.isPaging = isPaging;
     }
 
-    public Message getMessage(Integer version) throws IOException
+    public MessageOut<RangeSliceCommand> createMessage()
     {
-        DataOutputBuffer dob = new DataOutputBuffer();
-        serializer.serialize(this, dob, version);
-        return new Message(FBUtilities.getBroadcastAddress(),
-                           StorageService.Verb.RANGE_SLICE,
-                           Arrays.copyOf(dob.getData(), dob.getLength()), version);
+        return new MessageOut<RangeSliceCommand>(MessagingService.Verb.RANGE_SLICE, this, serializer);
     }
 
     @Override
@@ -136,13 +130,6 @@ public class RangeSliceCommand implements MessageProducer, IReadCommand
                ", maxResults=" + maxResults +
                ", maxIsColumns=" + maxIsColumns +
                '}';
-    }
-
-    public static RangeSliceCommand read(Message message) throws IOException
-    {
-        byte[] bytes = message.getMessageBody();
-        FastByteArrayInputStream bis = new FastByteArrayInputStream(bytes);
-        return serializer.deserialize(new DataInputStream(bis), message.getVersion());
     }
 
     public String getKeyspace()
@@ -178,7 +165,7 @@ class RangeSliceCommandSerializer implements IVersionedSerializer<RangeSliceComm
                     FBUtilities.serialize(ser, expr, dos);
             }
         }
-        AbstractBounds.serializer().serialize(sliceCommand.range, dos, version);
+        AbstractBounds.serializer.serialize(sliceCommand.range, dos, version);
         dos.writeInt(sliceCommand.maxResults);
         if (version >= MessagingService.VERSION_11)
         {
@@ -217,7 +204,7 @@ class RangeSliceCommandSerializer implements IVersionedSerializer<RangeSliceComm
                 rowFilter.add(expr);
             }
         }
-        AbstractBounds<RowPosition> range = AbstractBounds.serializer().deserialize(dis, version).toRowBounds();
+        AbstractBounds<RowPosition> range = AbstractBounds.serializer.deserialize(dis, version).toRowBounds();
 
         int maxResults = dis.readInt();
         boolean maxIsColumns = false;
@@ -232,6 +219,65 @@ class RangeSliceCommandSerializer implements IVersionedSerializer<RangeSliceComm
 
     public long serializedSize(RangeSliceCommand rangeSliceCommand, int version)
     {
-        throw new UnsupportedOperationException();
+        int ksLength = FBUtilities.encodedUTF8Length(rangeSliceCommand.keyspace);
+        long size = TypeSizes.NATIVE.sizeof(ksLength) + ksLength;
+        int cfLength = FBUtilities.encodedUTF8Length(rangeSliceCommand.column_family);
+        size += TypeSizes.NATIVE.sizeof(cfLength) + cfLength;
+
+        ByteBuffer sc = rangeSliceCommand.super_column;
+        if (sc != null)
+        {
+            size += TypeSizes.NATIVE.sizeof(sc.remaining());
+            size += sc.remaining();
+        }
+        else
+        {
+            size += TypeSizes.NATIVE.sizeof(0);
+        }
+
+        TSerializer ser = new TSerializer(new TBinaryProtocol.Factory());
+        try
+        {
+            int predicateLength = ser.serialize(rangeSliceCommand.predicate).length;
+            size += TypeSizes.NATIVE.sizeof(predicateLength);
+            size += predicateLength;
+        }
+        catch (TException e)
+        {
+            throw new RuntimeException(e);
+        }
+
+        if (version >= MessagingService.VERSION_11)
+        {
+            if (rangeSliceCommand.row_filter == null)
+            {
+                size += TypeSizes.NATIVE.sizeof(0);
+            }
+            else
+            {
+                size += TypeSizes.NATIVE.sizeof(rangeSliceCommand.row_filter.size());
+                for (IndexExpression expr : rangeSliceCommand.row_filter)
+                {
+                    try
+                    {
+                        int filterLength = ser.serialize(expr).length;
+                        size += TypeSizes.NATIVE.sizeof(filterLength);
+                        size += filterLength;
+                    }
+                    catch (TException e)
+                    {
+                        throw new RuntimeException(e);
+                    }
+                }
+            }
+        }
+        size += AbstractBounds.serializer.serializedSize(rangeSliceCommand.range, version);
+        size += TypeSizes.NATIVE.sizeof(rangeSliceCommand.maxResults);
+        if (version >= MessagingService.VERSION_11)
+        {
+            size += TypeSizes.NATIVE.sizeof(rangeSliceCommand.maxIsColumns);
+            size += TypeSizes.NATIVE.sizeof(rangeSliceCommand.isPaging);
+        }
+        return size;
     }
 }
