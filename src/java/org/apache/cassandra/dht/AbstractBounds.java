@@ -23,6 +23,7 @@ import java.io.IOException;
 import java.io.Serializable;
 import java.util.*;
 
+import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.db.RowPosition;
 import org.apache.cassandra.io.IVersionedSerializer;
 import org.apache.cassandra.net.MessagingService;
@@ -31,12 +32,7 @@ import org.apache.cassandra.utils.Pair;
 public abstract class AbstractBounds<T extends RingPosition> implements Serializable
 {
     private static final long serialVersionUID = 1L;
-    private static final AbstractBoundsSerializer serializer = new AbstractBoundsSerializer();
-
-    public static AbstractBoundsSerializer serializer()
-    {
-        return serializer;
-    }
+    public static final AbstractBoundsSerializer serializer = new AbstractBoundsSerializer();
 
     private enum Type
     {
@@ -118,21 +114,25 @@ public abstract class AbstractBounds<T extends RingPosition> implements Serializ
              * The first int tells us if it's a range or bounds (depending on the value) _and_ if it's tokens or keys (depending on the
              * sign). We use negative kind for keys so as to preserve the serialization of token from older version.
              */
-            boolean isToken = range.left instanceof Token;
-            int kind = range instanceof Range ? Type.RANGE.ordinal() : Type.BOUNDS.ordinal();
-            if (!isToken)
-                kind = -(kind+1);
-            out.writeInt(kind);
-            if (isToken)
+            out.writeInt(kindInt(range));
+            if (range.left instanceof Token)
             {
-                Token.serializer().serialize((Token)range.left, out);
-                Token.serializer().serialize((Token)range.right, out);
+                Token.serializer.serialize((Token) range.left, out);
+                Token.serializer.serialize((Token) range.right, out);
             }
             else
             {
-                RowPosition.serializer().serialize((RowPosition)range.left, out);
-                RowPosition.serializer().serialize((RowPosition)range.right, out);
+                RowPosition.serializer.serialize((RowPosition) range.left, out);
+                RowPosition.serializer.serialize((RowPosition) range.right, out);
             }
+        }
+
+        private int kindInt(AbstractBounds<?> ab)
+        {
+            int kind = ab instanceof Range ? Type.RANGE.ordinal() : Type.BOUNDS.ordinal();
+            if (!(ab.left instanceof Token))
+                kind = -(kind + 1);
+            return kind;
         }
 
         public AbstractBounds<?> deserialize(DataInput in, int version) throws IOException
@@ -145,13 +145,13 @@ public abstract class AbstractBounds<T extends RingPosition> implements Serializ
             RingPosition left, right;
             if (isToken)
             {
-                left = Token.serializer().deserialize(in);
-                right = Token.serializer().deserialize(in);
+                left = Token.serializer.deserialize(in);
+                right = Token.serializer.deserialize(in);
             }
             else
             {
-                left = RowPosition.serializer().deserialize(in);
-                right = RowPosition.serializer().deserialize(in);
+                left = RowPosition.serializer.deserialize(in);
+                right = RowPosition.serializer.deserialize(in);
             }
 
             if (kind == Type.RANGE.ordinal())
@@ -159,9 +159,20 @@ public abstract class AbstractBounds<T extends RingPosition> implements Serializ
             return new Bounds(left, right);
         }
 
-        public long serializedSize(AbstractBounds<?> abstractBounds, int version)
+        public long serializedSize(AbstractBounds<?> ab, int version)
         {
-            throw new UnsupportedOperationException();
+            int size = TypeSizes.NATIVE.sizeof(kindInt(ab));
+            if (ab.left instanceof Token)
+            {
+                size += Token.serializer.serializedSize((Token) ab.left, TypeSizes.NATIVE);
+                size += Token.serializer.serializedSize((Token) ab.right, TypeSizes.NATIVE);
+            }
+            else
+            {
+                size += RowPosition.serializer.serializedSize((RowPosition) ab.left, TypeSizes.NATIVE);
+                size += RowPosition.serializer.serializedSize((RowPosition) ab.right, TypeSizes.NATIVE);
+            }
+            return size;
         }
     }
 }
