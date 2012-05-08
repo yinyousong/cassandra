@@ -19,21 +19,15 @@ package org.apache.cassandra.gms;
 
 import java.io.*;
 
+import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.io.IVersionedSerializer;
-
 
 /**
  * HeartBeat State associated with any given endpoint.
  */
-
 class HeartBeatState
 {
-    private static final IVersionedSerializer<HeartBeatState> serializer;
-
-    static
-    {
-        serializer = new HeartBeatStateSerializer();
-    }
+    public static final IVersionedSerializer<HeartBeatState> serializer = new HeartBeatStateSerializer();
 
     private int generation;
     private int version;
@@ -47,11 +41,6 @@ class HeartBeatState
     {
         generation = gen;
         version = ver;
-    }
-
-    public static IVersionedSerializer<HeartBeatState> serializer()
-    {
-        return serializer;
     }
 
     int getGeneration()
@@ -88,8 +77,8 @@ class HeartBeatStateSerializer implements IVersionedSerializer<HeartBeatState>
         return new HeartBeatState(dis.readInt(), dis.readInt());
     }
 
-    public long serializedSize(HeartBeatState heartBeatState, int version)
+    public long serializedSize(HeartBeatState state, int version)
     {
-        throw new UnsupportedOperationException();
+        return TypeSizes.NATIVE.sizeof(state.getGeneration()) + TypeSizes.NATIVE.sizeof(state.getHeartBeatVersion());
     }
 }
