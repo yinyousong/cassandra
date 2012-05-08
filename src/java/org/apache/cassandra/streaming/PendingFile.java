@@ -21,10 +21,12 @@ import java.io.*;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.io.IVersionedSerializer;
 import org.apache.cassandra.io.sstable.Descriptor;
 import org.apache.cassandra.io.sstable.SSTableReader;
 import org.apache.cassandra.net.MessagingService;
+import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.Pair;
 
 /**
@@ -32,12 +34,7 @@ import org.apache.cassandra.utils.Pair;
  */
 public class PendingFile
 {
-    private static final PendingFileSerializer serializer = new PendingFileSerializer();
-
-    public static PendingFileSerializer serializer()
-    {
-        return serializer;
-    }
+    public static final PendingFileSerializer serializer = new PendingFileSerializer();
 
     // NB: this reference is used to be able to release the acquired reference upon completion
     public final SSTableReader sstable;
@@ -147,9 +144,21 @@ public class PendingFile
             return new PendingFile(null, desc, component, sections, type, estimatedKeys);
         }
 
-        public long serializedSize(PendingFile pendingFile, int version)
+        public long serializedSize(PendingFile pf, int version)
         {
-            throw new UnsupportedOperationException();
+            if (pf == null)
+                return TypeSizes.NATIVE.sizeof(0);
+
+            long size = FBUtilities.serializedUTF8Size(pf.desc.filenameFor(pf.component));
+            size += FBUtilities.serializedUTF8Size(pf.component);
+            size += TypeSizes.NATIVE.sizeof(pf.sections.size());
+            for (Pair<Long,Long> section : pf.sections)
+                size += TypeSizes.NATIVE.sizeof(section.left + TypeSizes.NATIVE.sizeof(section.right));
+            if (version > MessagingService.VERSION_07)
+                size += FBUtilities.serializedUTF8Size(pf.type.name());
+            if (version > MessagingService.VERSION_080)
+                size += TypeSizes.NATIVE.sizeof(pf.estimatedKeys);
+            return size;
         }
     }
 }

@@ -25,14 +25,15 @@ import java.util.List;
 import org.apache.cassandra.db.ReadResponse;
 import org.apache.cassandra.db.Table;
 import org.apache.cassandra.locator.NetworkTopologyStrategy;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.MessageIn;
 import org.apache.cassandra.thrift.ConsistencyLevel;
 import org.apache.cassandra.thrift.UnavailableException;
+import org.apache.thrift.protocol.TMessage;
 
 /**
  * Datacenter Quorum response handler blocks for a quorum of responses from the local DC
  */
-public class DatacenterReadCallback<T> extends ReadCallback<T>
+public class DatacenterReadCallback<TMessage, TResolved> extends ReadCallback<TMessage, TResolved>
 {
     private static final Comparator<InetAddress> localComparator = new Comparator<InetAddress>()
     {
@@ -60,9 +61,9 @@ public class DatacenterReadCallback<T> extends ReadCallback<T>
     }
 
     @Override
-    protected boolean waitingFor(Message message)
+    protected boolean waitingFor(MessageIn message)
     {
-        return localdc.equals(snitch.getDatacenter(message.getFrom()));
+        return localdc.equals(snitch.getDatacenter(message.from));
     }
 
     @Override

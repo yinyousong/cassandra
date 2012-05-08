@@ -17,14 +17,14 @@
  */
 package org.apache.cassandra.db;
 
-import java.io.IOError;
-import java.io.IOException;
+import java.util.Collection;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.net.IVerbHandler;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.MessageIn;
+import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.service.MigrationManager;
 
@@ -36,18 +36,12 @@ public class MigrationRequestVerbHandler implements IVerbHandler
 {
     private static final Logger logger = LoggerFactory.getLogger(MigrationRequestVerbHandler.class);
 
-    public void doVerb(Message message, String id)
+    public void doVerb(MessageIn message, String id)
     {
-        logger.debug("Received migration request from {}.", message.getFrom());
-
-        try
-        {
-            Message response = message.getInternalReply(MigrationManager.serializeSchema(SystemTable.serializeSchema(), message.getVersion()), message.getVersion());
-            MessagingService.instance().sendReply(response, id, message.getFrom());
-        }
-        catch (IOException e)
-        {
-            throw new IOError(e);
-        }
+        logger.debug("Received migration request from {}.", message.from);
+        MessageOut<Collection<RowMutation>> response = new MessageOut<Collection<RowMutation>>(MessagingService.Verb.INTERNAL_RESPONSE,
+                                                                                               SystemTable.serializeSchema(),
+                                                                                               MigrationManager.MigrationsSerializer.instance);
+        MessagingService.instance().sendReply(response, id, message.from);
     }
 }
