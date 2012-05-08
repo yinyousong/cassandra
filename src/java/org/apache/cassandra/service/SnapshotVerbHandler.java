@@ -20,28 +20,28 @@ package org.apache.cassandra.service;
 import org.apache.cassandra.db.SnapshotCommand;
 import org.apache.cassandra.db.Table;
 import org.apache.cassandra.net.IVerbHandler;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.MessageIn;
+import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
-import org.apache.cassandra.utils.FBUtilities;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class SnapshotVerbHandler implements IVerbHandler
+public class SnapshotVerbHandler implements IVerbHandler<SnapshotCommand>
 {
     private static final Logger logger = LoggerFactory.getLogger(SnapshotVerbHandler.class);
-    public void doVerb(Message message, String id)
+    public void doVerb(MessageIn<SnapshotCommand> message, String id)
     {
         try
         {
-            SnapshotCommand command = SnapshotCommand.read(message);
+            SnapshotCommand command = message.payload;
             if (command.clear_snapshot)
                 Table.open(command.keyspace).clearSnapshot(command.snapshot_name);
             else
                 Table.open(command.keyspace).getColumnFamilyStore(command.column_family).snapshot(command.snapshot_name);
-            Message response = message.getReply(FBUtilities.getBroadcastAddress(), new byte[0], MessagingService.current_version);
             if (logger.isDebugEnabled())
-                logger.debug("Sending response to snapshot request {} to {} ", command.snapshot_name, message.getFrom());
-            MessagingService.instance().sendReply(response, id, message.getFrom());
+                logger.debug("Sending response to snapshot request {} to {} ", command.snapshot_name, message.from);
+            MessagingService.instance().sendReply(new MessageOut(MessagingService.Verb.REQUEST_RESPONSE), id, message.from);
         }
         catch (Exception ex)
         {
