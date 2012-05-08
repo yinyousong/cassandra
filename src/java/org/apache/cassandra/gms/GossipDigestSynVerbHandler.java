@@ -17,8 +17,6 @@
  */
 package org.apache.cassandra.gms;
 
-import java.io.DataInputStream;
-import java.io.IOException;
 import java.net.InetAddress;
 import java.util.*;
 
@@ -26,18 +24,18 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.io.util.FastByteArrayInputStream;
 import org.apache.cassandra.net.IVerbHandler;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.MessageIn;
+import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
 
-public class GossipDigestSynVerbHandler implements IVerbHandler
+public class GossipDigestSynVerbHandler implements IVerbHandler<GossipDigestSyn>
 {
     private static final Logger logger = LoggerFactory.getLogger( GossipDigestSynVerbHandler.class);
 
-    public void doVerb(Message message, String id)
+    public void doVerb(MessageIn<GossipDigestSyn> message, String id)
     {
-        InetAddress from = message.getFrom();
+        InetAddress from = message.from;
         if (logger.isTraceEnabled())
             logger.trace("Received a GossipDigestSynMessage from {}", from);
         if (!Gossiper.instance.isEnabled())
@@ -47,49 +45,40 @@ public class GossipDigestSynVerbHandler implements IVerbHandler
             return;
         }
 
-        byte[] bytes = message.getMessageBody();
-        DataInputStream dis = new DataInputStream( new FastByteArrayInputStream(bytes) );
-
-        try
+        GossipDigestSyn gDigestMessage = message.payload;
+        /* If the message is from a different cluster throw it away. */
+        if (!gDigestMessage.clusterId.equals(DatabaseDescriptor.getClusterName()))
         {
-            GossipDigestSynMessage gDigestMessage = GossipDigestSynMessage.serializer().deserialize(dis, message.getVersion());
-            /* If the message is from a different cluster throw it away. */
-            if ( !gDigestMessage.clusterId.equals(DatabaseDescriptor.getClusterName()) )
-            {
-                logger.warn("ClusterName mismatch from " + from + " " + gDigestMessage.clusterId  + "!=" + DatabaseDescriptor.getClusterName());
-                return;
-            }
-
-            List<GossipDigest> gDigestList = gDigestMessage.getGossipDigests();
-            if (logger.isTraceEnabled())
-            {
-                StringBuilder sb = new StringBuilder();
-                for ( GossipDigest gDigest : gDigestList )
-                {
-                    sb.append(gDigest);
-                    sb.append(" ");
-                }
-                logger.trace("Gossip syn digests are : " + sb.toString());
-            }
-            /* Notify the Failure Detector */
-            Gossiper.instance.notifyFailureDetector(gDigestList);
-
-            doSort(gDigestList);
-
-            List<GossipDigest> deltaGossipDigestList = new ArrayList<GossipDigest>();
-            Map<InetAddress, EndpointState> deltaEpStateMap = new HashMap<InetAddress, EndpointState>();
-            Gossiper.instance.examineGossiper(gDigestList, deltaGossipDigestList, deltaEpStateMap);
-
-            GossipDigestAckMessage gDigestAck = new GossipDigestAckMessage(deltaGossipDigestList, deltaEpStateMap);
-            Message gDigestAckMessage = Gossiper.instance.makeGossipDigestAckMessage(gDigestAck, message.getVersion());
-            if (logger.isTraceEnabled())
-                logger.trace("Sending a GossipDigestAckMessage to {}", from);
-            MessagingService.instance().sendOneWay(gDigestAckMessage, from);
+            logger.warn("ClusterName mismatch from " + from + " " + gDigestMessage.clusterId  + "!=" + DatabaseDescriptor.getClusterName());
+            return;
         }
-        catch (IOException e)
+
+        List<GossipDigest> gDigestList = gDigestMessage.getGossipDigests();
+        if (logger.isTraceEnabled())
         {
-            throw new RuntimeException(e);
+            StringBuilder sb = new StringBuilder();
+            for ( GossipDigest gDigest : gDigestList )
+            {
+                sb.append(gDigest);
+                sb.append(" ");
+            }
+            logger.trace("Gossip syn digests are : " + sb.toString());
         }
+        /* Notify the Failure Detector */
+        Gossiper.instance.notifyFailureDetector(gDigestList);
+
+        doSort(gDigestList);
+
+        List<GossipDigest> deltaGossipDigestList = new ArrayList<GossipDigest>();
+        Map<InetAddress, EndpointState> deltaEpStateMap = new HashMap<InetAddress, EndpointState>();
+        Gossiper.instance.examineGossiper(gDigestList, deltaGossipDigestList, deltaEpStateMap);
+
+        MessageOut<GossipDigestAck> gDigestAckMessage = new MessageOut<GossipDigestAck>(MessagingService.Verb.GOSSIP_DIGEST_ACK,
+                                                                                                      new GossipDigestAck(deltaGossipDigestList, deltaEpStateMap),
+                                                                                                      GossipDigestAck.serializer);
+        if (logger.isTraceEnabled())
+            logger.trace("Sending a GossipDigestAckMessage to {}", from);
+        MessagingService.instance().sendOneWay(gDigestAckMessage, from);
     }
 
     /*

@@ -24,7 +24,7 @@ import java.util.Map;
 import org.apache.cassandra.db.ColumnFamily;
 import org.apache.cassandra.db.ReadResponse;
 import org.apache.cassandra.db.Row;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.MessageIn;
 
 public class RowDigestResolver extends AbstractRowResolver
 {
@@ -38,9 +38,9 @@ public class RowDigestResolver extends AbstractRowResolver
      */
     public Row getData() throws IOException
     {
-        for (Map.Entry<Message, ReadResponse> entry : replies.entrySet())
+        for (MessageIn<ReadResponse> message : replies)
         {
-            ReadResponse result = entry.getValue();
+            ReadResponse result = message.payload;
             if (!result.isDigestQuery())
                 return result.row();
         }
@@ -69,9 +69,10 @@ public class RowDigestResolver extends AbstractRowResolver
         // also extract the data reply, if any.
         ColumnFamily data = null;
         ByteBuffer digest = null;
-        for (Map.Entry<Message, ReadResponse> entry : replies.entrySet())
+
+        for (MessageIn<ReadResponse> message : replies)
         {
-            ReadResponse response = entry.getValue();
+            ReadResponse response = message.payload;
             if (response.isDigestQuery())
             {
                 if (digest == null)
@@ -112,9 +113,9 @@ public class RowDigestResolver extends AbstractRowResolver
 
     public boolean isDataPresent()
     {
-        for (ReadResponse result : replies.values())
+        for (MessageIn<ReadResponse> message : replies)
         {
-            if (!result.isDigestQuery())
+            if (!message.payload.isDigestQuery())
                 return true;
         }
         return false;
