@@ -17,23 +17,26 @@
  */
 package org.apache.cassandra.db;
 
+import java.util.UUID;
+
+import org.apache.cassandra.config.Schema;
+import org.apache.cassandra.utils.UUIDGen;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.net.IVerbHandler;
-import org.apache.cassandra.net.Message;
+import org.apache.cassandra.net.MessageIn;
+import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
-
 
 public class SchemaCheckVerbHandler implements IVerbHandler
 {
     private final Logger logger = LoggerFactory.getLogger(SchemaCheckVerbHandler.class);
 
-    public void doVerb(Message message, String id)
+    public void doVerb(MessageIn message, String id)
     {
         logger.debug("Received schema check request.");
-        Message response = message.getInternalReply(Schema.instance.getVersion().toString().getBytes(), message.getVersion());
-        MessagingService.instance().sendReply(response, id, message.getFrom());
+        MessageOut<UUID> response = new MessageOut<UUID>(MessagingService.Verb.INTERNAL_RESPONSE, Schema.instance.getVersion(), UUIDGen.serializer);
+        MessagingService.instance().sendReply(response, id, message.from);
     }
 }
