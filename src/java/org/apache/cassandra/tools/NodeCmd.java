@@ -304,14 +304,19 @@ public class NodeCmd
             else                                      state = "Normal";
 
             String load = loadMap.containsKey(endpoint) ? loadMap.get(endpoint) : "?";
-            List<String> tokens = probe.getTokens(endpoint);
 
             Float owns = 0.0F;
-            for (String token : tokens)
-                owns += (ownerships.get(token) == null) ? 0.0F : ownerships.get(token);
-            String strOwns = new DecimalFormat("##0.00%").format(owns);
+            int numTokens = 0;
+            if ("Normal".equals(state))
+            {
+                List<String> tokens = probe.getTokens(endpoint);
+                for (String token : tokens)
+                    owns += (ownerships.get(token) == null) ? 0.0F : ownerships.get(token);
+                numTokens = tokens.size();
+            }
 
-            outs.print(String.format(fmt, endpoint, status, state, load, tokens.size(), strOwns, entry.getValue()));
+            String strOwns = new DecimalFormat("##0.00%").format(owns);
+            outs.print(String.format(fmt, endpoint, status, state, load, numTokens, strOwns, entry.getValue()));
         }
     }
 
