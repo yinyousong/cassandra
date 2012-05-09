@@ -77,14 +77,14 @@ public class NetworkTopologyStrategy extends AbstractReplicationStrategy
      * @return map of DC onto set of racks in that DC
      */
     @SuppressWarnings("serial")
-    public Map<String, Set<String>> getRacks(Map<Token, InetAddress> tokenToEndpointMap, Map<String, Set<InetAddress>> dcEndpoints)
+    public Map<String, Set<String>> getRacks(TokenMetadata metadata, Map<String, Set<InetAddress>> dcEndpoints)
     {
         Map<String, Set<String>> racks = new HashMap<String, Set<String>>(datacenters.size())
         {{
             for (String dc : datacenters.keySet())
                 put(dc, new HashSet<String>());
         }};
-        for (InetAddress ep : tokenToEndpointMap.values())
+        for (InetAddress ep : metadata.getNormalEndpoints())
         {
             racks.get(snitch.getDatacenter(ep)).add(snitch.getRack(ep));
             dcEndpoints.get(snitch.getDatacenter(ep)).add(ep);
@@ -105,7 +105,6 @@ public class NetworkTopologyStrategy extends AbstractReplicationStrategy
     @Override
     public List<InetAddress> calculateNaturalEndpoints(Token searchToken, TokenMetadata tokenMetadata)
     {
-        Map<Token, InetAddress> tokenToEndpointMap = tokenMetadata.getTokenToEndpointMapForReading();
         // replicas we have found in each DC
         Map<String, List<InetAddress>> dcEndpoints = new HashMap<String, List<InetAddress>>(datacenters.size())
         {{
@@ -122,7 +121,7 @@ public class NetworkTopologyStrategy extends AbstractReplicationStrategy
         // track which racks haven't yet been used for a DC
         // when the set size is 0 we know we can stop trying to get unique racks
         // (getRacks also populates remainingEndpoints)
-        Map<String, Set<String>> racks = getRacks(tokenToEndpointMap, remainingEndpoints);
+        Map<String, Set<String>> racks = getRacks(tokenMetadata, remainingEndpoints);
         // tracks the endpoints that we skipped over while looking for unique racks
         // when we relax the rack uniqueness we can append this to the current result so we don't have to wind back the iterator
         Map<String, ArrayList<InetAddress>> skippedDcEndpoints = new HashMap<String, ArrayList<InetAddress>>(datacenters.size())
@@ -136,8 +135,8 @@ public class NetworkTopologyStrategy extends AbstractReplicationStrategy
             Token next = tokenIter.next();
             InetAddress ep = tokenMetadata.getEndpoint(next);
             String dc = snitch.getDatacenter(ep);
-            // have we already found all replicas for this dc?
-            if (!remainingEndpoints.containsKey(dc))
+            // have we already found all replicas for this dc or used this endpoint already?
+            if (!remainingEndpoints.containsKey(dc) || !remainingEndpoints.get(dc).contains(ep))
                 continue;
             // can we skip checking the rack?
             if (racks.get(dc).isEmpty())
@@ -160,7 +159,8 @@ public class NetworkTopologyStrategy extends AbstractReplicationStrategy
                     }
                 } else
                 {
-                    skippedDcEndpoints.get(dc).add(ep);
+                    if (remainingEndpoints.get(dc).remove(ep))
+                        skippedDcEndpoints.get(dc).add(ep);
                 }
             }
             // check if we found RF replicas for this DC or whether we exhausted its endpoints
