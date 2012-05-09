@@ -618,6 +618,11 @@ public class TokenMetadata
         return bootstrapTokens;
     }
 
+    public Set<InetAddress> getNormalEndpoints()
+    {
+        return tokenToEndpointMap.inverse().keySet();
+    }
+
     /** caller should not modify leavingEndpoints */
     public Set<InetAddress> getLeavingEndpoints()
     {
