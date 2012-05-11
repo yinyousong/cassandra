@@ -91,6 +91,8 @@ public class NetworkTopologyStrategy extends AbstractReplicationStrategy
         Map<String, Set<InetAddress>> allEndpoints = topology.getDatacenterEndpoints();
         // all racks in a DC so we can check when we have exhausted all racks in a DC
         Map<String, Set<String>> racks = topology.getDatacenterRacks();
+        assert !allEndpoints.isEmpty() && !racks.isEmpty() : "snitch is not aware of any cluster members";
+
         // tracks the racks we have already placed replicas in
         Map<String, Set<String>> seenRacks = new HashMap<String, Set<String>>(datacenters.size())
         {{
