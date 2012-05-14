@@ -86,6 +86,7 @@ public class TokenMetadata
 
     /* Use this lock for manipulating the token map */
     private final ReadWriteLock lock = new ReentrantReadWriteLock(true);
+    private ArrayList<Token> sortedTokens;
 
     /* list of subscribers that are notified when the tokenToEndpointMap changed */
     private final CopyOnWriteArrayList<AbstractReplicationStrategy> subscribers = new CopyOnWriteArrayList<AbstractReplicationStrategy>();
@@ -110,6 +111,12 @@ public class TokenMetadata
             tokenToEndpointMap = SortedBiMultiValMap.<Token, InetAddress>create(null, inetaddressCmp);
         this.tokenToEndpointMap = tokenToEndpointMap;
         endpointToHostIdMap = HashBiMap.create();
+        sortedTokens = sortTokens();
+    }
+
+    private ArrayList<Token> sortTokens()
+    {
+        return new ArrayList<Token>(tokenToEndpointMap.keySet());
     }
 
     /** @return the number of nodes bootstrapping into source's primary range */
@@ -159,6 +166,7 @@ public class TokenMetadata
         lock.writeLock().lock();
         try
         {
+            boolean shouldSortTokens = false;
             Set<InetAddress> resetEndpoints = new HashSet<InetAddress>();
             for (Pair<Token, InetAddress> tokenEndpointPair : tokenPairs)
             {
@@ -177,9 +185,16 @@ public class TokenMetadata
                 }
 
                 InetAddress prev = tokenToEndpointMap.put(token, endpoint);
-                if (!endpoint.equals(prev) && prev != null)
-                    logger.warn("Token " + token + " changing ownership from " + prev + " to " + endpoint);
+                if (!endpoint.equals(prev))
+                {
+                    if (prev != null)
+                        logger.warn("Token " + token + " changing ownership from " + prev + " to " + endpoint);
+                    shouldSortTokens = true;
+                }
             }
+
+            if (shouldSortTokens)
+                sortedTokens = sortTokens();
         }
         finally
         {
@@ -339,6 +354,7 @@ public class TokenMetadata
             tokenToEndpointMap.removeValue(endpoint);
             leavingEndpoints.remove(endpoint);
             endpointToHostIdMap.remove(endpoint);
+            sortedTokens = sortTokens();
             invalidateCaches();
         }
         finally
@@ -551,7 +567,7 @@ public class TokenMetadata
         lock.readLock().lock();
         try
         {
-            return new ArrayList<Token>(tokenToEndpointMap.keySet());
+            return sortedTokens;
         }
         finally
         {
@@ -612,15 +628,10 @@ public class TokenMetadata
         return (Token) ((index == (tokens.size() - 1)) ? tokens.get(0) : tokens.get(index + 1));
     }
 
-    /** caller should not modify bootstrapTokens */
-    public Map<Token, InetAddress> getBootstrapTokens()
+    /** caller should not modify bootstrapTokens & should lock when iterating */
+    public BiMultiValMap<Token, InetAddress> getBootstrapTokens()
     {
         return bootstrapTokens;
-    }
-
-    public Set<InetAddress> getNormalEndpoints()
-    {
-        return tokenToEndpointMap.inverse().keySet();
     }
 
     /** caller should not modify leavingEndpoints */
