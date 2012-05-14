@@ -612,15 +612,10 @@ public class TokenMetadata
         return (Token) ((index == (tokens.size() - 1)) ? tokens.get(0) : tokens.get(index + 1));
     }
 
-    /** caller should not modify bootstrapTokens */
-    public Map<Token, InetAddress> getBootstrapTokens()
+    /** caller should not modify bootstrapTokens & should lock when iterating */
+    public BiMultiValMap<Token, InetAddress> getBootstrapTokens()
     {
         return bootstrapTokens;
-    }
-
-    public Set<InetAddress> getNormalEndpoints()
-    {
-        return tokenToEndpointMap.inverse().keySet();
     }
 
     /** caller should not modify leavingEndpoints */
