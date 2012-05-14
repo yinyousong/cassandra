@@ -61,6 +61,7 @@ import org.apache.cassandra.service.AntiEntropyService.RepairFuture;
 import org.apache.cassandra.service.AntiEntropyService.TreeRequestVerbHandler;
 import org.apache.cassandra.streaming.*;
 import org.apache.cassandra.thrift.*;
+import org.apache.cassandra.utils.BiMultiValMap;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.NodeId;
 import org.apache.cassandra.utils.Pair;
@@ -1388,7 +1389,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
     {
         TokenMetadata tm = StorageService.instance.getTokenMetadata();
         Multimap<Range<Token>, InetAddress> pendingRanges = HashMultimap.create();
-        Map<Token, InetAddress> bootstrapTokens = tm.getBootstrapTokens();
+        BiMultiValMap<Token, InetAddress> bootstrapTokens = tm.getBootstrapTokens();
         Set<InetAddress> leavingEndpoints = tm.getLeavingEndpoints();
 
         if (bootstrapTokens.isEmpty() && leavingEndpoints.isEmpty() && tm.getMovingEndpoints().isEmpty())
@@ -1425,11 +1426,11 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         // allLeftMetadata and check in between what their ranges would be.
         synchronized (bootstrapTokens)
         {
-            for (Map.Entry<Token, InetAddress> entry : bootstrapTokens.entrySet())
+            for (InetAddress endpoint : bootstrapTokens.inverse().keySet())
             {
-                InetAddress endpoint = entry.getValue();
-
-                allLeftMetadata.updateNormalToken(entry.getKey(), endpoint);
+                Collection<Token> tokens = bootstrapTokens.inverse().get(endpoint);
+                
+                allLeftMetadata.updateNormalTokens(tokens, endpoint);
                 for (Range<Token> range : strategy.getAddressRanges(allLeftMetadata).get(endpoint))
                     pendingRanges.put(range, endpoint);
                 allLeftMetadata.removeEndpoint(endpoint);
