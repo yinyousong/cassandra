@@ -189,7 +189,8 @@ public class SelectStatement implements CQLStatement
     private List<Row> getSlice(List<ByteBuffer> variables) throws InvalidRequestException, TimedOutException, UnavailableException
     {
         QueryPath queryPath = new QueryPath(columnFamily());
-        List<ReadCommand> commands = new ArrayList<ReadCommand>();
+        Collection<ByteBuffer> keys = getKeys(variables);
+        List<ReadCommand> commands = new ArrayList<ReadCommand>(keys.size());
 
         // ...a range (slice) of column names
         if (isColumnRange())
@@ -200,7 +201,7 @@ public class SelectStatement implements CQLStatement
             // Note that we use the total limit for every key. This is
             // potentially inefficient, but then again, IN + LIMIT is not a
             // very sensible choice
-            for (ByteBuffer key : getKeys(variables))
+            for (ByteBuffer key : keys)
             {
                 QueryProcessor.validateKey(key);
                 QueryProcessor.validateSliceRange(cfDef.cfm, start, finish, isReversed);
@@ -219,7 +220,7 @@ public class SelectStatement implements CQLStatement
             Collection<ByteBuffer> columnNames = getRequestedColumns(variables);
             QueryProcessor.validateColumnNames(columnNames);
 
-            for (ByteBuffer key: getKeys(variables))
+            for (ByteBuffer key: keys)
             {
                 QueryProcessor.validateKey(key);
                 commands.add(new SliceByNamesReadCommand(keyspace(), key, queryPath, columnNames));
@@ -465,18 +466,18 @@ public class SelectStatement implements CQLStatement
         }
         else
         {
-            // Adds all (requested) columns
-            List<Pair<CFDefinition.Name, ColumnIdentifier>> selection = getExpandedSelection();
-            List<ByteBuffer> columns = new ArrayList<ByteBuffer>(selection.size());
-            Iterator<Pair<CFDefinition.Name, ColumnIdentifier>> iter = selection.iterator();
+            // Adds all columns (even if the user selected a few columns, we
+            // need to query all columns to know if the row exists or not).
+            // Note that when we allow IS NOT NULL in queries and if all
+            // selected name are request 'not null', we will allow to only
+            // query those.
+            List<ByteBuffer> columns = new ArrayList<ByteBuffer>(cfDef.columns.size());
+            Iterator<ColumnIdentifier> iter = cfDef.metadata.keySet().iterator();
             while (iter.hasNext())
             {
-                CFDefinition.Name name = iter.next().left;
-                // Skip everything that is not a 'metadata' column
-                if (name.kind != CFDefinition.Name.Kind.COLUMN_METADATA)
-                    continue;
+                ColumnIdentifier name = iter.next();
                 ColumnNameBuilder b = iter.hasNext() ? builder.copy() : builder;
-                ByteBuffer cname = b.add(name.name.key).build();
+                ByteBuffer cname = b.add(name.key).build();
                 columns.add(cname);
             }
             return columns;
@@ -624,14 +625,19 @@ public class SelectStatement implements CQLStatement
         List<Pair<CFDefinition.Name, ColumnIdentifier>> selection = getExpandedSelection();
         List<Column> thriftColumns = null;
 
+        // Add schema only once
+        for (Pair<CFDefinition.Name, ColumnIdentifier> p : selection)
+            addToSchema(schema, p);
+
         for (org.apache.cassandra.db.Row row : rows)
         {
+            // Not columns match the query, skip
+            if (row.cf == null)
+                continue;
+
             if (cfDef.isCompact)
             {
                 // One cqlRow per column
-                if (row.cf == null)
-                    continue;
-
                 for (IColumn c : columnsInOrder(row.cf, variables))
                 {
                     if (c.isMarkedForDelete())
@@ -660,7 +666,6 @@ public class SelectStatement implements CQLStatement
                         CFDefinition.Name name = p.left;
                         ByteBuffer nameAsRequested = p.right.key;
 
-                        addToSchema(schema, p);
                         Column col = new Column(nameAsRequested);
                         switch (name.kind)
                         {
@@ -696,9 +701,6 @@ public class SelectStatement implements CQLStatement
             else if (cfDef.isComposite)
             {
                 // Sparse case: group column in cqlRow when composite prefix is equal
-                if (row.cf == null)
-                    continue;
-
                 CompositeType composite = (CompositeType)cfDef.cfm.comparator;
                 int last = composite.types.size() - 1;
 
@@ -727,8 +729,12 @@ public class SelectStatement implements CQLStatement
             }
             else
             {
+                if (row.cf.getLiveColumnCount() == 0)
+                    continue;
+
                 // Static case: One cqlRow for all columns
                 thriftColumns = new ArrayList<Column>(selection.size());
+
                 // Respect selection order
                 for (Pair<CFDefinition.Name, ColumnIdentifier> p : selection)
                 {
@@ -737,15 +743,10 @@ public class SelectStatement implements CQLStatement
 
                     if (name.kind == CFDefinition.Name.Kind.KEY_ALIAS)
                     {
-                        addToSchema(schema, p);
                         thriftColumns.add(new Column(nameAsRequested).setValue(row.key.key).setTimestamp(-1L));
                         continue;
                     }
 
-                    if (row.cf == null)
-                        continue;
-
-                    addToSchema(schema, p);
                     IColumn c = row.cf.getColumn(name.name.key);
                     Column col = new Column(name.name.key);
                     if (c != null && !c.isMarkedForDelete())
@@ -797,7 +798,6 @@ public class SelectStatement implements CQLStatement
             CFDefinition.Name name = p.left;
             ByteBuffer nameAsRequested = p.right.key;
 
-            addToSchema(schema, p);
             Column col = new Column(nameAsRequested);
             switch (name.kind)
             {
@@ -813,7 +813,8 @@ public class SelectStatement implements CQLStatement
                     throw new AssertionError();
                 case COLUMN_METADATA:
                     IColumn c = columns.get(name.name.key);
-                    if (c != null && !c.isMarkedForDelete())
+                    // We already have excluded deleted columns
+                    if (c != null)
                         col.setValue(value(c)).setTimestamp(c.timestamp());
                     break;
             }
