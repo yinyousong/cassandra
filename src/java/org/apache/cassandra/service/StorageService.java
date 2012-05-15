@@ -176,6 +176,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
     }
 
     /** This method updates the local token on disk  */
+    @Deprecated
     public void setToken(Token token)
     {
         setTokens(Arrays.asList(token));
