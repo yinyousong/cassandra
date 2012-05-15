@@ -257,7 +257,7 @@ public class VersionedValue implements Comparable<VersionedValue>
                     outValue = versionString(pieces[0], pieces[2]);
                 }
 
-                if (type == STATUS_LEFT)
+                if (type.equals(STATUS_LEFT))
                 {
                     assert pieces.length >= 3;
                     outValue = versionString(pieces[0], pieces[2], pieces[1]);
