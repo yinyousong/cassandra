@@ -73,7 +73,6 @@ public class NetworkTopologyStrategy extends AbstractReplicationStrategy
 
     /**
      * calculate endpoints in one pass through the tokens by tracking our progress in each DC, rack etc.
-     * this is worst-case O(N) but should in most cases be ~ O(RF)
      */
     @SuppressWarnings("serial")
     @Override
