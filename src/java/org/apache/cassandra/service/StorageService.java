@@ -1274,16 +1274,16 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         if (tokenMetadata.isMember(endpoint))
         {
             String state = pieces[0];
-            Token removeToken = tokenMetadata.getToken(endpoint);
+            Collection<Token> removeTokens = tokenMetadata.getTokens(endpoint);
 
             if (VersionedValue.REMOVED_TOKEN.equals(state))
             {
-                excise(removeToken, endpoint, extractExpireTime(pieces, Gossiper.instance.getVersion(endpoint)));
+                excise(removeTokens, endpoint, extractExpireTime(pieces, Gossiper.instance.getVersion(endpoint)));
             }
             else if (VersionedValue.REMOVING_TOKEN.equals(state))
             {
                 if (logger.isDebugEnabled())
-                    logger.debug("Token " + removeToken + " removed manually (endpoint was " + endpoint + ")");
+                    logger.debug("Tokens " + removeTokens + " removed manually (endpoint was " + endpoint + ")");
 
                 // Note that the endpoint is being removed
                 tokenMetadata.addLeavingEndpoint(endpoint);
@@ -1298,12 +1298,6 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         } // not a member, nothing to do
     }
 
-    @Deprecated
-    private void excise(Token token, InetAddress endpoint)
-    {
-        excise(Arrays.asList(token), endpoint);
-    }
-
     private void excise(Collection<Token> tokens, InetAddress endpoint)
     {
         HintedHandOffManager.instance.deleteHintsForEndpoint(endpoint);
@@ -1316,12 +1310,6 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
             logger.info("Removing tokens " + tokens + " for " + endpoint);
             SystemTable.removeTokens(tokens);
         }
-    }
-
-    @Deprecated
-    private void excise(Token token, InetAddress endpoint, long expireTime)
-    {
-        excise(Arrays.asList(token), endpoint, expireTime);
     }
 
     private void excise(Collection<Token> tokens, InetAddress endpoint, long expireTime)
@@ -2579,8 +2567,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
             {
                 UUID hostId = tokenMetadata.getHostId(endpoint);
                 Gossiper.instance.advertiseTokenRemoved(endpoint, hostId);
-                Token token = tokenMetadata.getToken(endpoint);
-                excise(token, endpoint);
+                excise(tokenMetadata.getTokens(endpoint), endpoint);
             }
             replicatingNodes.clear();
             removingNode = null;
@@ -2610,7 +2597,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         if (endpoint == null)
             throw new UnsupportedOperationException("Host ID not found.");
 
-        Token token = tokenMetadata.getToken(endpoint);
+        Collection<Token> tokens = tokenMetadata.getTokens(endpoint);
 
         if (endpoint.equals(myAddress))
              throw new UnsupportedOperationException("Cannot remove self");
@@ -2668,7 +2655,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
             }
         }
 
-        excise(token, endpoint);
+        excise(tokens, endpoint);
 
         // gossiper will indicate the token has left
         Gossiper.instance.advertiseTokenRemoved(endpoint, hostId);
