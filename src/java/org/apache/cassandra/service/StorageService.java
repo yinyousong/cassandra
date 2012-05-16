@@ -176,6 +176,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
     }
 
     /** This method updates the local token on disk  */
+    @Deprecated
     public void setToken(Token token)
     {
         setTokens(Arrays.asList(token));
@@ -483,7 +484,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         Schema.instance.updateVersionAndAnnounce();
         // add rpc listening info
         Gossiper.instance.addLocalApplicationState(ApplicationState.RPC_ADDRESS, valueFactory.rpcaddress(DatabaseDescriptor.getRpcAddress()));
-        if (null != DatabaseDescriptor.getReplaceToken())
+        if (0 != DatabaseDescriptor.getReplaceTokens().size())
             Gossiper.instance.addLocalApplicationState(ApplicationState.STATUS, valueFactory.hibernate(true));
 
         MessagingService.instance().listen(FBUtilities.getLocalAddress());
@@ -535,7 +536,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
             if (logger.isDebugEnabled())
                 logger.debug("... got ring + schema info");
 
-            if (DatabaseDescriptor.getReplaceToken() == null)
+            if (DatabaseDescriptor.getReplaceTokens().size() == 0)
             {
                 if (tokenMetadata.isMember(FBUtilities.getBroadcastAddress()))
                 {
@@ -557,9 +558,8 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
                 {
                     throw new AssertionError(e);
                 }
-                String[] replaceTokens = DatabaseDescriptor.getReplaceToken().split(",");
                 tokens = new ArrayList<Token>();
-                for (String token : replaceTokens)
+                for (String token : DatabaseDescriptor.getReplaceTokens())
                     tokens.add(StorageService.getPartitioner().getTokenFactory().fromString(token));
 
                 // check for operator errors...
@@ -582,8 +582,8 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
             tokens = SystemTable.getSavedTokens();
             if (tokens.isEmpty())
             {
-                String initialToken = DatabaseDescriptor.getInitialToken();
-                if (initialToken == null)
+                Collection<String> initialTokens = DatabaseDescriptor.getInitialTokens();
+                if (initialTokens.size() < 1)
                 {
                     tokens = BootStrapper.getRandomTokens(tokenMetadata, DatabaseDescriptor.getNumTokens());
                     if (DatabaseDescriptor.getNumTokens() == 1)
@@ -593,9 +593,8 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
                 }
                 else
                 {
-                    String[] tokenStrings = initialToken.split(",");
                     tokens = new ArrayList<Token>();
-                    for (String token : tokenStrings)
+                    for (String token : initialTokens)
                         tokens.add(getPartitioner().getTokenFactory().fromString(token));
                     logger.info("Saved token not found. Using " + tokens + " from configuration");
                 }
@@ -711,7 +710,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
     {
         isBootstrapMode = true;
         SystemTable.updateTokens(tokens); // DON'T use setToken, that makes us part of the ring locally which is incorrect until we are done bootstrapping
-        if (null == DatabaseDescriptor.getReplaceToken())
+        if (0 == DatabaseDescriptor.getReplaceTokens().size())
         {
             // if not an existing token then bootstrap
             Gossiper.instance.addLocalApplicationState(ApplicationState.STATUS,
