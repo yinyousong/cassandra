@@ -104,9 +104,6 @@ public abstract class AbstractEndpointSnitch implements IEndpointSnitch, IEndpoi
         try
         {
             String dc = getDatacenter(ep);
-            if (dcEndpoints.containsKey(dc) && dcEndpoints.get(dc).contains(ep))
-                return;
-
             Map<String, Set<InetAddress>> newEndpoints = deepCopyEndpointsMap();
             if (!newEndpoints.containsKey(dc))
                 newEndpoints.put(dc, new HashSet<InetAddress>());
@@ -125,10 +122,9 @@ public abstract class AbstractEndpointSnitch implements IEndpointSnitch, IEndpoi
         try
         {
             String dc = getDatacenter(ep);
-            if (!dcEndpoints.containsKey(dc) || !dcEndpoints.get(dc).contains(ep))
-                return;
-
             Map<String, Set<InetAddress>> newEndpoints = deepCopyEndpointsMap();
+            if (!newEndpoints.containsKey(dc))
+                return;
             newEndpoints.get(dc).remove(ep);
             if (newEndpoints.get(dc).isEmpty())
                 newEndpoints.remove(dc);
@@ -171,40 +167,32 @@ public abstract class AbstractEndpointSnitch implements IEndpointSnitch, IEndpoi
         }
     }
 
-    private void checkState(InetAddress endpoint, VersionedValue value)
-    {
-        if (value == null)
-            return;
-        String[] pieces = value.value.split(VersionedValue.DELIMITER_STR);
-        if (VersionedValue.STATUS_NORMAL.equals(pieces[0]))
-            addEndpoint(endpoint);
-        else
-            removeEndpoint(endpoint);
-    }
-
     @Override
     public void onAlive(InetAddress endpoint, EndpointState state)
     {
-        checkState(endpoint, state.getApplicationState(ApplicationState.STATUS));
     }
 
     @Override
     public void onChange(InetAddress endpoint, ApplicationState state, VersionedValue value)
     {
         if (state == ApplicationState.STATUS)
-            checkState(endpoint, value);
+        {
+            String[] pieces = value.value.split(VersionedValue.DELIMITER_STR);
+            if (VersionedValue.STATUS_NORMAL.equals(pieces[0]))
+                addEndpoint(endpoint);
+            else
+                removeEndpoint(endpoint);
+        }
     }
 
     @Override
     public void onDead(InetAddress endpoint, EndpointState state)
     {
-        checkState(endpoint, state.getApplicationState(ApplicationState.STATUS));
     }
 
     @Override
-    public void onJoin(InetAddress endpoint, EndpointState state)
+    public void onJoin(InetAddress endpoint, EndpointState epState)
     {
-        checkState(endpoint, state.getApplicationState(ApplicationState.STATUS));
     }
 
     @Override
@@ -216,6 +204,5 @@ public abstract class AbstractEndpointSnitch implements IEndpointSnitch, IEndpoi
     @Override
     public void onRestart(InetAddress endpoint, EndpointState state)
     {
-        checkState(endpoint, state.getApplicationState(ApplicationState.STATUS));
     }
 }
