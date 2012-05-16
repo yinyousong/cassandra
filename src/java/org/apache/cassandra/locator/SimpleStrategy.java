@@ -54,9 +54,7 @@ public class SimpleStrategy extends AbstractReplicationStrategy
         Iterator<Token> iter = TokenMetadata.ringIterator(tokens, token, false);
         while (endpoints.size() < replicas && iter.hasNext())
         {
-            InetAddress ep = metadata.getEndpoint(iter.next());
-            if (!endpoints.contains(ep))
-                endpoints.add(ep);
+            endpoints.add(metadata.getEndpoint(iter.next()));
         }
         return endpoints;
     }
