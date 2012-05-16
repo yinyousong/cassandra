@@ -89,12 +89,12 @@ public class BootStrapper
      */
     public static Collection<Token> getBootstrapTokens(final TokenMetadata metadata, Map<InetAddress, Double> load) throws IOException, ConfigurationException
     {
-        if (DatabaseDescriptor.getInitialToken() != null)
+        Collection<String> initialTokens = DatabaseDescriptor.getInitialTokens();
+        if (initialTokens.size() > 0)
         {
-            logger.debug("tokens manually specified as " + DatabaseDescriptor.getInitialToken());
-            String[] tokenStrings = DatabaseDescriptor.getInitialToken().split(",");
+            logger.debug("tokens manually specified as {}",  initialTokens);
             List<Token> tokens = new ArrayList<Token>();
-            for (String tokenString : tokenStrings)
+            for (String tokenString : initialTokens)
             {
                 Token token = StorageService.getPartitioner().getTokenFactory().fromString(tokenString);
                 if (metadata.getEndpoint(token) != null)
