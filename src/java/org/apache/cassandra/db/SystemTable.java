@@ -46,6 +46,8 @@ import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.NodeId;
 import org.apache.cassandra.utils.UUIDGen;
 
+import static org.apache.cassandra.utils.ByteBufferUtil.EMPTY_BYTE_BUFFER;;
+
 public class SystemTable
 {
     private static final Logger logger = LoggerFactory.getLogger(SystemTable.class);
@@ -168,7 +170,7 @@ public class SystemTable
 
         // The marker wasn't found (This Is The Upgrade), so copy the token from the old location, to the new.
         cf = ColumnFamily.create(Table.SYSTEM_TABLE, STATUS_CF);
-        cf.addColumn(new Column(tokenBytes, ByteBufferUtil.EMPTY_BYTE_BUFFER, FBUtilities.timestampMicros()));
+        cf.addColumn(new Column(tokenBytes, EMPTY_BYTE_BUFFER, FBUtilities.timestampMicros()));
         rm = new RowMutation(Table.SYSTEM_TABLE, TOKENS_KEY);
         rm.add(cf);
         try
@@ -278,25 +280,10 @@ public class SystemTable
         IPartitioner p = StorageService.getPartitioner();
         ColumnFamily cf = ColumnFamily.create(Table.SYSTEM_TABLE, STATUS_CF);
 
-        // serialized tokens as a blob. Could use composite columns here instead? 
-        int len = tokens.size() * Short.SIZE/8;
-        List<ByteBuffer> tokenBytes = new ArrayList<ByteBuffer>(tokens.size());
-        for (Token token : tokens)
-        {
-            final ByteBuffer byteArray = p.getTokenFactory().toByteArray(token);
-            tokenBytes.add(byteArray);
-            len += byteArray.remaining();
-        }
-        ByteBuffer serialized = ByteBuffer.allocate(len);
-        for (ByteBuffer byteArray : tokenBytes)
-        {
-            serialized.putShort((short)byteArray.remaining());
-            serialized.put(byteArray);
-        }
-        serialized.rewind();
+        for (Token<?> token : tokens)
+            cf.addColumn(new Column(p.getTokenFactory().toByteArray(token), EMPTY_BYTE_BUFFER, FBUtilities.timestampMicros()));
 
-        cf.addColumn(new Column(SystemTable.TOKEN, serialized, FBUtilities.timestampMicros()));
-        RowMutation rm = new RowMutation(Table.SYSTEM_TABLE, LOCATION_KEY);
+        RowMutation rm = new RowMutation(Table.SYSTEM_TABLE, TOKENS_KEY);
         rm.add(cf);
         try
         {
@@ -418,20 +405,13 @@ public class SystemTable
     public static Collection<Token> getSavedTokens()
     {
         Table table = Table.open(Table.SYSTEM_TABLE);
-        QueryFilter filter = QueryFilter.getNamesFilter(decorate(LOCATION_KEY), new QueryPath(STATUS_CF), TOKEN);
-        ColumnFamily cf = table.getColumnFamilyStore(STATUS_CF).getColumnFamily(filter);
-        if (cf == null)
-            return Collections.emptyList();
-
-        ByteBuffer serialized = cf.getColumn(TOKEN).value();
+        QueryFilter filter = QueryFilter.getIdentityFilter(decorate(TOKENS_KEY), new QueryPath(STATUS_CF));
+        ColumnFamily cf = ColumnFamilyStore.removeDeleted(table.getColumnFamilyStore(STATUS_CF).getColumnFamily(filter), Integer.MAX_VALUE);
         List<Token> tokens = new ArrayList<Token>();
-        while (serialized.hasRemaining())
-        {
-            short len = serialized.getShort();
-            byte[] tokenBytes = new byte[len];
-            serialized.get(tokenBytes);
-            tokens.add(StorageService.getPartitioner().getTokenFactory().fromByteArray(ByteBuffer.wrap(tokenBytes)));
-        }
+
+        if (cf != null)
+            for (IColumn column : cf.getSortedColumns())
+                tokens.add(StorageService.getPartitioner().getTokenFactory().fromByteArray(column.name()));
 
         return tokens;
     }
