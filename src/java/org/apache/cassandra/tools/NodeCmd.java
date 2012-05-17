@@ -211,28 +211,16 @@ public class NodeCmd
      *
      * @param outs the stream to write to
      */
-    public void printRing(PrintStream outs, String keyspace)
+    public void printRing(PrintStream outs)
     {
         Map<String, String> tokenToEndpoint = probe.getTokenToEndpointMap();
         List<String> sortedTokens = new ArrayList<String>(tokenToEndpoint.keySet());
 
-        String format;
+        String format = "%-16s%-12s%-12s%-8s%-44s%n";
+        outs.printf(format, "Address", "DC", "Rack", "Owns", "Token");
 
         // Calculate per-token ownership of the ring
-        Map<String, Float> ownerships;
-        try
-        {
-            ownerships = probe.effectiveOwnership(keyspace);
-            format = "%-16s%-12s%-12s%-20s%-44s%n";
-            outs.printf(format, "Address", "DC", "Rack", "Effective-Ownership", "Token");
-        }
-        catch (ConfigurationException ex)
-        {
-            ownerships = probe.getOwnership();
-            format = "%-16s%-12s%-12s%-8s%-44s%n";
-            outs.printf("Note: Ownership information does not include topology, please specify a keyspace. \n");
-            outs.printf(format, "Address", "DC", "Rack", "Owns", "Token");
-        }
+        Map<String, Float> ownerships = probe.getOwnership();
 
         // show pre-wrap token twice so you can always read a node's range as
         // (previous line token, current line token]
@@ -274,20 +262,23 @@ public class NodeCmd
         Collection<String> movingNodes = probe.getMovingNodes();
         Map<String, String> loadMap = probe.getLoadMap();
 
+        String fmt;
+
         // Calculate per-token ownership of the ring
         Map<String, Float> ownerships;
         try
         {
             ownerships = probe.effectiveOwnership(keyspace);
+            fmt = "%-16s %-7s %-8s %-10s %-7s %-16s %s%n";
+            outs.print(String.format(fmt, "Address", "Status", "State", "Load", "Tokens", "Owns (effective)", "Host ID"));
         }
         catch (ConfigurationException ex)
         {
             ownerships = probe.getOwnership();
+            fmt = "%-16s %-7s %-8s %-10s %-7s %-7s %s%n";
             outs.printf("Warn: Ownership information does not include topology, please specify a keyspace. \n");
+            outs.print(String.format(fmt, "Address", "Status", "State", "Load", "Tokens", "Owns", "Host ID"));
         }
-
-        String fmt = "%-16s %-7s %-8s %-10s %-7s %-7s %s%n";
-        outs.print(String.format(fmt, "Address", "Status", "State", "Load", "Tokens", "Owns", "Host ID"));
 
         for (Map.Entry<String, String> entry : probe.getHostIdMap().entrySet())
         {
@@ -772,11 +763,7 @@ public class NodeCmd
 
             switch (command)
             {
-                case RING :
-                    if (arguments.length > 0) { nodeCmd.printRing(System.out, arguments[0]); }
-                    else                      { nodeCmd.printRing(System.out, null); };
-                    break;
-
+                case RING            : nodeCmd.printRing(System.out); break;
                 case INFO            : nodeCmd.printInfo(System.out, cmd); break;
                 case CFSTATS         : nodeCmd.printColumnFamilyStats(System.out); break;
                 case TPSTATS         : nodeCmd.printThreadPoolStats(System.out); break;
