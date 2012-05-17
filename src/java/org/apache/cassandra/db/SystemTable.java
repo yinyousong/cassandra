@@ -63,6 +63,7 @@ public class SystemTable
     private static final ByteBuffer RING_KEY = ByteBufferUtil.bytes("Ring");
     private static final ByteBuffer BOOTSTRAP_KEY = ByteBufferUtil.bytes("Bootstrap");
     private static final ByteBuffer COOKIE_KEY = ByteBufferUtil.bytes("Cookies");
+    private static final ByteBuffer TOKENS_KEY = ByteBufferUtil.bytes("Tokens");
     private static final ByteBuffer BOOTSTRAP = ByteBufferUtil.bytes("B");
     private static final ByteBuffer TOKEN = ByteBufferUtil.bytes("Token");
     private static final ByteBuffer GENERATION = ByteBufferUtil.bytes("Generation");
@@ -80,6 +81,7 @@ public class SystemTable
     {
         setupVersion();
         purgeIncompatibleHints();
+        upgradeTokenStorage();
     }
 
     private static void setupVersion() throws IOException
@@ -137,6 +139,64 @@ public class SystemTable
         RowMutation rm = new RowMutation(Table.SYSTEM_TABLE, COOKIE_KEY);
         rm.add(new QueryPath(STATUS_CF, null, upgradeMarker), ByteBufferUtil.bytes("oh yes, they were purged"), FBUtilities.timestampMicros());
         rm.apply();
+    }
+
+    /** When upgrading from pre-1.2, perform a one-time copy of the token to the new tokens row. */
+    private static void upgradeTokenStorage()
+    {
+        // Query STATUS_CF/LOCATION_KEY/TOKEN, the pre-1.2 location for a persisted token
+        ByteBuffer tokenBytes = null;
+        Table table = Table.open(Table.SYSTEM_TABLE);
+        QueryFilter filter = QueryFilter.getNamesFilter(decorate(LOCATION_KEY), new QueryPath(STATUS_CF), TOKEN);
+        ColumnFamily cf = table.getColumnFamilyStore(STATUS_CF).getColumnFamily(filter);
+
+        // If a result exists, this node is an upgrade from something earlier than 1.2, so we go on.
+        if (cf != null) tokenBytes = cf.getColumn(TOKEN).value();
+        else return;
+
+        // Look for an upgrade marker to indicate that the copy has already been performed.
+        ByteBuffer upgradeMarker = ByteBufferUtil.bytes("Pre-1.2 token copied");
+        filter = QueryFilter.getNamesFilter(decorate(COOKIE_KEY), new QueryPath(STATUS_CF), upgradeMarker);
+        cf = table.getColumnFamilyStore(STATUS_CF).getColumnFamily(filter);
+        if (cf != null)
+        {
+            logger.debug("Pre-1.2 token has already been copied");
+            return;
+        }
+
+        RowMutation rm;
+
+        // The marker wasn't found (This Is The Upgrade), so copy the token from the old location, to the new.
+        cf = ColumnFamily.create(Table.SYSTEM_TABLE, STATUS_CF);
+        cf.addColumn(new Column(tokenBytes, ByteBufferUtil.EMPTY_BYTE_BUFFER, FBUtilities.timestampMicros()));
+        rm = new RowMutation(Table.SYSTEM_TABLE, TOKENS_KEY);
+        rm.add(cf);
+        try
+        {
+            rm.apply();
+        }
+        catch (IOException e)
+        {
+            throw new IOError(e);
+        }
+
+        // Set the upgrade marker so that we know better next time.
+        cf = ColumnFamily.create(Table.SYSTEM_TABLE, STATUS_CF);
+        cf.addColumn(new Column(upgradeMarker, ByteBufferUtil.bytes("yes, they were copied"), FBUtilities.timestampMicros()));
+        rm = new RowMutation(Table.SYSTEM_TABLE, COOKIE_KEY);
+        rm.add(cf);
+        try
+        {
+            rm.apply();
+        }
+        catch (IOException e)
+        {
+            throw new IOError(e);
+        }
+
+        logger.debug("Copied over token from legacy location.");
+
+        forceBlockingFlush(STATUS_CF);
     }
 
     /**
