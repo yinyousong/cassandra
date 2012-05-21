@@ -220,9 +220,6 @@ public class NodeCmd
         outs.printf(format, "Address", "DC", "Rack", "Owns", "Token");
 
         // Calculate per-token ownership of the ring
-<<<<<<< HEAD
-        Map<String, Float> ownerships = probe.getOwnership();
-=======
         Map<String, Float> ownerships;
         try
         {
@@ -235,7 +232,6 @@ public class NodeCmd
             outs.printf("Note: Ownership information does not include topology, please specify a keyspace. %n");
             outs.printf(format, "Address", "DC", "Rack", "Status", "State", "Load", "Owns", "Token");
         }
->>>>>>> refs/top-bases/p/4125/01_admin_tools
 
         // show pre-wrap token twice so you can always read a node's range as
         // (previous line token, current line token]
