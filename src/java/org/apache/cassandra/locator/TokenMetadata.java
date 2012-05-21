@@ -845,17 +845,16 @@ public class TokenMetadata
         return endpoints;
     }
 
-    /**
-     * @return a token to endpoint map to consider for read operations on the cluster.
-     */
-    public Map<Token, InetAddress> getTokenToEndpointMapForReading()
+    /** @return an endpoint to token multimap representation of tokenToEndpointMap (a copy) */
+    public Multimap<InetAddress, Token> getEndpointToTokenMapForReading()
     {
         lock.readLock().lock();
         try
         {
-            Map<Token, InetAddress> map = new HashMap<Token, InetAddress>(tokenToEndpointMap.size());
-            map.putAll(tokenToEndpointMap);
-            return map;
+            Multimap<InetAddress, Token> cloned = HashMultimap.<InetAddress, Token>create();
+            for (Map.Entry<Token, InetAddress> entry : tokenToEndpointMap.entrySet())
+                cloned.put(entry.getValue(), entry.getKey());
+            return cloned;
         }
         finally
         {
