@@ -136,9 +136,9 @@ public class NodeCmd
         StringBuilder header = new StringBuilder();
         header.append("\nAvailable commands:\n");
         // No args
-        addCmdHelp(header, "ring", "Print informations on the token ring");
+        addCmdHelp(header, "ring", "Print information about the token ring");
         addCmdHelp(header, "join", "Join the ring");
-        addCmdHelp(header, "info", "Print node informations (uptime, load, ...)");
+        addCmdHelp(header, "info", "Print node information (uptime, load, ...)");
         addCmdHelp(header, "cfstats", "Print statistics on column families");
         addCmdHelp(header, "ids", "Print list of unique host IDs");
         addCmdHelp(header, "version", "Print cassandra version");
@@ -233,7 +233,7 @@ public class NodeCmd
         catch (ConfigurationException ex)
         {
             ownerships = probe.getOwnership();
-            outs.printf("Note: Ownership information does not include topology, please specify a keyspace. \n");
+            outs.printf("Note: Ownership information does not include topology, please specify a keyspace. %n");
             outs.printf(format, "Address", "DC", "Rack", "Status", "State", "Load", "Owns", "Token");
         }
 
@@ -701,12 +701,12 @@ public class NodeCmd
             Throwable inner = findInnermostThrowable(ioe);
             if (inner instanceof ConnectException)
             {
-                System.err.printf("Failed to connect to '%s:%d': %s\n", host, port, inner.getMessage());
+                System.err.printf("Failed to connect to '%s:%d': %s%n", host, port, inner.getMessage());
                 System.exit(1);
             }
             else if (inner instanceof UnknownHostException)
             {
-                System.err.printf("Cannot resolve '%s': unknown host\n", host);
+                System.err.printf("Cannot resolve '%s': unknown host%n", host);
                 System.exit(1);
             }
             else
