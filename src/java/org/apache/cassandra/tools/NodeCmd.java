@@ -138,9 +138,9 @@ public class NodeCmd
         StringBuilder header = new StringBuilder();
         header.append("\nAvailable commands:\n");
         // No args
-        addCmdHelp(header, "ring", "Print informations on the token ring");
+        addCmdHelp(header, "ring", "Print information about the token ring");
         addCmdHelp(header, "join", "Join the ring");
-        addCmdHelp(header, "info [-T/--tokens]", "Print node informations (uptime, load, ...)");
+        addCmdHelp(header, "info [-T/--tokens]", "Print node information (uptime, load, ...)");
         addCmdHelp(header, "clusterinfo", "Print cluster informations (status, load, IDs, ...)");
         addCmdHelp(header, "cfstats", "Print statistics on column families");
         addCmdHelp(header, "version", "Print cassandra version");
@@ -220,7 +220,22 @@ public class NodeCmd
         outs.printf(format, "Address", "DC", "Rack", "Owns", "Token");
 
         // Calculate per-token ownership of the ring
+<<<<<<< HEAD
         Map<String, Float> ownerships = probe.getOwnership();
+=======
+        Map<String, Float> ownerships;
+        try
+        {
+            ownerships = probe.effectiveOwnership(keyspace);
+            outs.printf(format, "Address", "DC", "Rack", "Status", "State", "Load", "Effective-Ownership", "Token");
+        }
+        catch (ConfigurationException ex)
+        {
+            ownerships = probe.getOwnership();
+            outs.printf("Note: Ownership information does not include topology, please specify a keyspace. %n");
+            outs.printf(format, "Address", "DC", "Rack", "Status", "State", "Load", "Owns", "Token");
+        }
+>>>>>>> refs/top-bases/p/4125/01_admin_tools
 
         // show pre-wrap token twice so you can always read a node's range as
         // (previous line token, current line token]
@@ -727,12 +742,12 @@ public class NodeCmd
             Throwable inner = findInnermostThrowable(ioe);
             if (inner instanceof ConnectException)
             {
-                System.err.printf("Failed to connect to '%s:%d': %s\n", host, port, inner.getMessage());
+                System.err.printf("Failed to connect to '%s:%d': %s%n", host, port, inner.getMessage());
                 System.exit(1);
             }
             else if (inner instanceof UnknownHostException)
             {
-                System.err.printf("Cannot resolve '%s': unknown host\n", host);
+                System.err.printf("Cannot resolve '%s': unknown host%n", host);
                 System.exit(1);
             }
             else
