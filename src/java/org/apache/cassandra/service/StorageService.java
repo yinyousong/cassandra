@@ -1116,10 +1116,10 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         if (tokenMetadata.isMember(endpoint))
             logger.info("Node " + endpoint + " state jump to normal");
 
-        // TODO: this logic needs to be thought through a little more carefully.
-        // TODO: eg. what happens if only one of the tokens is already handled by a different endpoint but the rest aren't?
         Set<Token> tokensToUpdateInMetadata = new HashSet<Token>();
         Set<Token> tokensToUpdateInSystemTable = new HashSet<Token>();
+        Multimap<InetAddress, Token> epToTokenCopy = getTokenMetadata().getEndpointToTokenMapForReading();
+
         for (Token token : tokens)
         {
             // we don't want to update if this node is responsible for the token and it has a later startup time than endpoint.
@@ -1139,18 +1139,29 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
             }
             else if (Gossiper.instance.compareEndpointStartup(endpoint, currentOwner) > 0)
             {
-                logger.info(String.format("Nodes %s and %s have the same token %s.  %s is the new owner",
-                                           endpoint, currentOwner, token, endpoint));
                 tokensToUpdateInMetadata.add(token);
-                // TODO: we don't want to remove the whole endpoint
-                Gossiper.instance.removeEndpoint(currentOwner);
                 if (!isClientMode)
                     tokensToUpdateInSystemTable.add(token);
+
+                // currentOwner is no longer current, endpoint is.  Keep track of these moves, because when
+                // a host no longer has any tokens, we'll want to remove it.
+                epToTokenCopy.get(currentOwner).remove(token);
+                if (epToTokenCopy.get(currentOwner).size() < 1)
+                    Gossiper.instance.removeEndpoint(currentOwner);
+
+                logger.info(String.format("Nodes %s and %s have the same token %s.  %s is the new owner",
+                        endpoint,
+                        currentOwner,
+                        token,
+                        endpoint));
             }
             else
             {
                 logger.info(String.format("Nodes %s and %s have the same token %s.  Ignoring %s",
-                                           endpoint, currentOwner, token, endpoint));
+                                           endpoint,
+                                           currentOwner,
+                                           token,
+                                           endpoint));
             }
         }
 
