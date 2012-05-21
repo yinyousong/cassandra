@@ -2368,10 +2368,8 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
                 throw new UnsupportedOperationException("data is currently moving to this node; unable to leave the ring");
         }
 
-        // setting 'moving' application state
         Gossiper.instance.addLocalApplicationState(ApplicationState.STATUS, valueFactory.moving(newToken));
-
-        logger.info(String.format("Moving %s from %s to %s.", localAddress, getLocalToken(), newToken));
+        setMode(Mode.MOVING, String.format("Moving %s from %s to %s.", localAddress, getLocalToken(), newToken), true);
 
         IEndpointSnitch snitch = DatabaseDescriptor.getEndpointSnitch();
 
@@ -2440,8 +2438,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
 
         if (!rangesToStreamByTable.isEmpty() || !rangesToFetch.isEmpty())
         {
-            logger.info("Sleeping {} ms before start streaming/fetching ranges.", RING_DELAY);
-
+            setMode(Mode.MOVING, String.format("Sleeping %s ms before start streaming/fetching ranges", RING_DELAY), true);
             try
             {
                 Thread.sleep(RING_DELAY);
@@ -2452,7 +2449,6 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
             }
 
             setMode(Mode.MOVING, "fetching new ranges and streaming old ranges", true);
-
             if (logger.isDebugEnabled())
                 logger.debug("[Move->STREAMING] Work Map: " + rangesToStreamByTable);
 
