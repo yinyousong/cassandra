@@ -1169,6 +1169,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
 
         Set<Token> tokensToUpdateInMetadata = new HashSet<Token>();
         Set<Token> tokensToUpdateInSystemTable = new HashSet<Token>();
+        Set<InetAddress> endpointsToRemove = new HashSet<InetAddress>();
         Multimap<InetAddress, Token> epToTokenCopy = getTokenMetadata().getEndpointToTokenMapForReading();
 
         for (Token token : tokens)
@@ -1198,13 +1199,13 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
                 // a host no longer has any tokens, we'll want to remove it.
                 epToTokenCopy.get(currentOwner).remove(token);
                 if (epToTokenCopy.get(currentOwner).size() < 1)
-                    Gossiper.instance.removeEndpoint(currentOwner);
+                    endpointsToRemove.add(currentOwner);
 
                 logger.info(String.format("Nodes %s and %s have the same token %s.  %s is the new owner",
-                        endpoint,
-                        currentOwner,
-                        token,
-                        endpoint));
+                                          endpoint,
+                                          currentOwner,
+                                          token,
+                                          endpoint));
             }
             else
             {
@@ -1217,6 +1218,8 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         }
 
         tokenMetadata.updateNormalTokens(tokensToUpdateInMetadata, endpoint);
+        for (InetAddress ep : endpointsToRemove)
+            Gossiper.instance.removeEndpoint(ep);
         SystemTable.updateTokens(endpoint, tokensToUpdateInSystemTable);
 
         if (tokenMetadata.isMoving(endpoint)) // if endpoint was moving to a new token
