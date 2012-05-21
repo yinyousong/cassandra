@@ -863,24 +863,6 @@ public class TokenMetadata
     }
 
     /**
-     * @return a token to endpoint map to consider for read operations on the cluster.
-     */
-    public Map<Token, InetAddress> getTokenToEndpointMapForReading()
-    {
-        lock.readLock().lock();
-        try
-        {
-            Map<Token, InetAddress> map = new HashMap<Token, InetAddress>(tokenToEndpointMap.size());
-            map.putAll(tokenToEndpointMap);
-            return map;
-        }
-        finally
-        {
-            lock.readLock().unlock();
-        }
-    }
-
-    /**
      * @return a (stable copy, won't be modified) Token to Endpoint map for all the normal and bootstrapping nodes
      *         in the cluster.
      */
