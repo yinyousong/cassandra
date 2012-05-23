@@ -82,7 +82,7 @@ public class DatabaseDescriptor
     private static RequestSchedulerId requestSchedulerId;
     private static RequestSchedulerOptions requestSchedulerOptions;
 
-    private static int keyCacheSizeInMB;
+    private static long keyCacheSizeInMB;
     private static IRowCacheProvider rowCacheProvider;
 
     /**
@@ -1046,7 +1046,7 @@ public class DatabaseDescriptor
         return conf.trickle_fsync_interval_in_kb;
     }
 
-    public static int getKeyCacheSizeInMB()
+    public static long getKeyCacheSizeInMB()
     {
         return keyCacheSizeInMB;
     }
@@ -1061,7 +1061,7 @@ public class DatabaseDescriptor
         return conf.key_cache_keys_to_save;
     }
 
-    public static int getRowCacheSizeInMB()
+    public static long getRowCacheSizeInMB()
     {
         return conf.row_cache_size_in_mb;
     }
