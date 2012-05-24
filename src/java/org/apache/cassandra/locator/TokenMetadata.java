@@ -107,7 +107,7 @@ public class TokenMetadata
         this(null, null);
     }
 
-    public TokenMetadata(BiMultiValMap<Token, InetAddress> tokenToEndpointMap)
+    public TokenMetadata(BiMultiValMap<Token, InetAddress> tokenToEndpointMap, Topology topology)
     {
         if (tokenToEndpointMap == null)
             tokenToEndpointMap = SortedBiMultiValMap.<Token, InetAddress>create(null, inetaddressCmp);
