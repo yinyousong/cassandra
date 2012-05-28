@@ -30,7 +30,6 @@
  * Open 1 sstableScanner per level for leveled compaction (CASSANDRA-4142)
  * Optimize reads when row deletion timestamps allow us to restrict
    the set of sstables we check (CASSANDRA-4116)
- * incremental repair by token range (CASSANDRA-3912)
  * add support for commitlog archiving and point-in-time recovery
    (CASSANDRA-3690)
  * avoid generating redundant compaction tasks during streaming
@@ -75,6 +74,7 @@
  * Check for unknown/invalid compression options (CASSANDRA-4266)
  * (cql3) Adds simple access to column timestamp and ttl (CASSANDRA-4217)
  * (cql3) Fix range queries with secondary indexes (CASSANDRA-4257)
+ * Better error messages from improper input in cli (CASSANDRA-3865)
 Merged from 1.0:
  * Fix super columns bug where cache is not updated (CASSANDRA-4190)
  * fix maxTimestamp to include row tombstones (CASSANDRA-4116)
@@ -86,6 +86,8 @@ Merged from 1.0:
    (CASSANDRA-3985)
  * synchronize LCS getEstimatedTasks to avoid CME (CASSANDRA-4255)
  * ensure unique streaming session id's (CASSANDRA-4223)
+ * kick off background compaction when min/max thresholds change 
+   (CASSANDRA-4279)
 
 
 1.1.0-final
