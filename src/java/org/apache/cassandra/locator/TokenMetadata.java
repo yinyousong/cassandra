@@ -901,7 +901,6 @@ public class TokenMetadata
 
     public class Topology
     {
-        private final IEndpointSnitch snitch = DatabaseDescriptor.getEndpointSnitch();
         private final Multimap<String, InetAddress> dcEndpoints;
         private final Map<String, Multimap<String, InetAddress>> dcRacks;
         private final Map<InetAddress, Pair<String, String>> currentLocations;
@@ -934,6 +933,7 @@ public class TokenMetadata
 
         protected synchronized void addEndpoint(InetAddress ep)
         {
+            IEndpointSnitch snitch = DatabaseDescriptor.getEndpointSnitch();
             String dc = snitch.getDatacenter(ep);
             String rack = snitch.getRack(ep);
             Pair<String, String> current = currentLocations.get(ep);
