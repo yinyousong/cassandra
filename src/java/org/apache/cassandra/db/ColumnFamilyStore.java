@@ -1823,10 +1823,13 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
     public void setMinimumCompactionThreshold(int minCompactionThreshold)
     {
         if ((minCompactionThreshold > this.maxCompactionThreshold.value()) && this.maxCompactionThreshold.value() != 0)
-        {
             throw new RuntimeException("The min_compaction_threshold cannot be larger than the max.");
-        }
+
         this.minCompactionThreshold.set(minCompactionThreshold);
+
+        // this is called as part of CompactionStrategy constructor; avoid circular dependency by checking for null
+        if (compactionStrategy != null)
+            CompactionManager.instance.submitBackground(this);
     }
 
     public int getMaximumCompactionThreshold()
@@ -1837,10 +1840,13 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
     public void setMaximumCompactionThreshold(int maxCompactionThreshold)
     {
         if (maxCompactionThreshold > 0 && maxCompactionThreshold < this.minCompactionThreshold.value())
-        {
             throw new RuntimeException("The max_compaction_threshold cannot be smaller than the min.");
-        }
+
         this.maxCompactionThreshold.set(maxCompactionThreshold);
+
+        // this is called as part of CompactionStrategy constructor; avoid circular dependency by checking for null
+        if (compactionStrategy != null)
+            CompactionManager.instance.submitBackground(this);
     }
 
     public boolean isCompactionDisabled()
