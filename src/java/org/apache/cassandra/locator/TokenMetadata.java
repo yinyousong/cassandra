@@ -18,6 +18,7 @@
 package org.apache.cassandra.locator;
 
 import java.net.InetAddress;
+import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -27,7 +28,9 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import com.google.common.collect.*;
 
+import org.apache.cassandra.utils.BiMultiValMap;
 import org.apache.cassandra.utils.Pair;
+import org.apache.cassandra.utils.SortedBiMultiValMap;
 import org.apache.commons.lang.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -43,7 +46,7 @@ public class TokenMetadata
     private static final Logger logger = LoggerFactory.getLogger(TokenMetadata.class);
 
     /* Maintains token to endpoint map of every node in the cluster. */
-    private final BiMap<Token, InetAddress> tokenToEndpointMap;
+    private final BiMultiValMap<Token, InetAddress> tokenToEndpointMap;
 
     /* Maintains endpoint to host ID map of every node in the cluster */
     private final BiMap<InetAddress, UUID> endpointToHostIdMap;
@@ -72,7 +75,7 @@ public class TokenMetadata
     // Finally, note that recording the tokens of joining nodes in bootstrapTokens also
     // means we can detect and reject the addition of multiple nodes at the same token
     // before one becomes part of the ring.
-    private final BiMap<Token, InetAddress> bootstrapTokens = Maps.synchronizedBiMap(HashBiMap.<Token, InetAddress>create());
+    private final BiMultiValMap<Token, InetAddress> bootstrapTokens = new BiMultiValMap<Token, InetAddress>();
     // (don't need to record Token here since it's still part of tokenToEndpointMap until it's done leaving)
     private final Set<InetAddress> leavingEndpoints = new HashSet<InetAddress>();
     // this is a cache of the calculation from {tokenToEndpointMap, bootstrapTokens, leavingEndpoints}
@@ -90,15 +93,24 @@ public class TokenMetadata
     /* list of subscribers that are notified when the tokenToEndpointMap changed */
     private final CopyOnWriteArrayList<AbstractReplicationStrategy> subscribers = new CopyOnWriteArrayList<AbstractReplicationStrategy>();
 
+    private final Comparator<InetAddress> inetaddressCmp = new Comparator<InetAddress>()
+    {
+        @Override
+        public int compare(InetAddress o1, InetAddress o2)
+        {
+            return ByteBuffer.wrap(o1.getAddress()).compareTo(ByteBuffer.wrap(o2.getAddress()));
+        }
+    };
+    
     public TokenMetadata()
     {
         this(null, null);
     }
 
-    public TokenMetadata(BiMap<Token, InetAddress> tokenToEndpointMap, Topology topology)
+    public TokenMetadata(BiMultiValMap<Token, InetAddress> tokenToEndpointMap, Topology topology)
     {
         if (tokenToEndpointMap == null)
-            tokenToEndpointMap = HashBiMap.create();
+            tokenToEndpointMap = SortedBiMultiValMap.<Token, InetAddress>create(null, inetaddressCmp);
         if (topology == null)
             topology = new Topology();
         this.tokenToEndpointMap = tokenToEndpointMap;
@@ -109,21 +121,20 @@ public class TokenMetadata
 
     private ArrayList<Token> sortTokens()
     {
-        ArrayList<Token> tokens = new ArrayList<Token>(tokenToEndpointMap.keySet());
-        Collections.sort(tokens);
-        return tokens;
+        return new ArrayList<Token>(tokenToEndpointMap.keySet());
     }
 
     /** @return the number of nodes bootstrapping into source's primary range */
     public int pendingRangeChanges(InetAddress source)
     {
         int n = 0;
-        Range<Token> sourceRange = getPrimaryRangeFor(getToken(source));
+        Collection<Range<Token>> sourceRanges = getPrimaryRangesFor(getTokens(source));
         synchronized (bootstrapTokens)
         {
             for (Token token : bootstrapTokens.keySet())
-                if (sourceRange.contains(token))
-                    n++;
+                for (Range<Token> range : sourceRanges)
+                    if (range.contains(token))
+                        n++;
         }
         return n;
     }
@@ -134,6 +145,14 @@ public class TokenMetadata
     public void updateNormalToken(Token token, InetAddress endpoint)
     {
         updateNormalTokens(Collections.singleton(Pair.create(token, endpoint)));
+    }
+
+    public void updateNormalTokens(Collection<Token> tokens, InetAddress endpoint)
+    {
+        Set<Pair<Token, InetAddress>> tokenPairs = new HashSet<Pair<Token, InetAddress>>(tokens.size());
+        for (Token token : tokens)
+            tokenPairs.add(new Pair<Token, InetAddress>(token, endpoint));
+        updateNormalTokens(tokenPairs);
     }
 
     /**
@@ -153,6 +172,7 @@ public class TokenMetadata
         try
         {
             boolean shouldSortTokens = false;
+            Set<InetAddress> resetEndpoints = new HashSet<InetAddress>();
             for (Pair<Token, InetAddress> tokenEndpointPair : tokenPairs)
             {
                 Token token = tokenEndpointPair.left;
@@ -161,21 +181,23 @@ public class TokenMetadata
                 assert token != null;
                 assert endpoint != null;
 
-                bootstrapTokens.inverse().remove(endpoint);
-                tokenToEndpointMap.inverse().remove(endpoint);
+                if (resetEndpoints.add(endpoint))
+                {
+                    bootstrapTokens.removeValue(endpoint);
+                    tokenToEndpointMap.removeValue(endpoint);
+					topology.addEndpoint(endpoint);
+                    leavingEndpoints.remove(endpoint);
+                    removeFromMoving(endpoint); // also removing this endpoint from moving
+					topology.addEndpoint(endpoint);
+                }
+
                 InetAddress prev = tokenToEndpointMap.put(token, endpoint);
                 if (!endpoint.equals(prev))
                 {
                     if (prev != null)
-                    {
                         logger.warn("Token " + token + " changing ownership from " + prev + " to " + endpoint);
-                        topology.removeEndpoint(prev);
-                    }
                     shouldSortTokens = true;
                 }
-                topology.addEndpoint(endpoint);
-                leavingEndpoints.remove(endpoint);
-                removeFromMoving(endpoint); // also removing this endpoint from moving
             }
 
             if (shouldSortTokens)
@@ -238,26 +260,38 @@ public class TokenMetadata
         return readMap;
     }
 
+    @Deprecated
     public void addBootstrapToken(Token token, InetAddress endpoint)
     {
-        assert token != null;
+        addBootstrapTokens(Collections.singleton(token), endpoint);
+    }
+
+    public void addBootstrapTokens(Collection<Token> tokens, InetAddress endpoint)
+    {
+        assert tokens != null && !tokens.isEmpty();
         assert endpoint != null;
 
         lock.writeLock().lock();
         try
         {
+            
             InetAddress oldEndpoint;
 
-            oldEndpoint = bootstrapTokens.get(token);
-            if (oldEndpoint != null && !oldEndpoint.equals(endpoint))
-                throw new RuntimeException("Bootstrap Token collision between " + oldEndpoint + " and " + endpoint + " (token " + token);
+            for (Token token : tokens)
+            {
+                oldEndpoint = bootstrapTokens.get(token);
+                if (oldEndpoint != null && !oldEndpoint.equals(endpoint))
+                    throw new RuntimeException("Bootstrap Token collision between " + oldEndpoint + " and " + endpoint + " (token " + token);
+    
+                oldEndpoint = tokenToEndpointMap.get(token);
+                if (oldEndpoint != null && !oldEndpoint.equals(endpoint))
+                    throw new RuntimeException("Bootstrap Token collision between " + oldEndpoint + " and " + endpoint + " (token " + token);
+            }
 
-            oldEndpoint = tokenToEndpointMap.get(token);
-            if (oldEndpoint != null && !oldEndpoint.equals(endpoint))
-                throw new RuntimeException("Bootstrap Token collision between " + oldEndpoint + " and " + endpoint + " (token " + token);
+            bootstrapTokens.removeValue(endpoint);
 
-            bootstrapTokens.inverse().remove(endpoint);
-            bootstrapTokens.put(token, endpoint);
+            for (Token token : tokens)
+                bootstrapTokens.put(token, endpoint);
         }
         finally
         {
@@ -323,8 +357,8 @@ public class TokenMetadata
         lock.writeLock().lock();
         try
         {
-            bootstrapTokens.inverse().remove(endpoint);
-            tokenToEndpointMap.inverse().remove(endpoint);
+            bootstrapTokens.removeValue(endpoint);
+            tokenToEndpointMap.removeValue(endpoint);
             topology.removeEndpoint(endpoint);
             leavingEndpoints.remove(endpoint);
             endpointToHostIdMap.remove(endpoint);
@@ -365,7 +399,7 @@ public class TokenMetadata
         }
     }
 
-    public Token getToken(InetAddress endpoint)
+    public Collection<Token> getTokens(InetAddress endpoint)
     {
         assert endpoint != null;
         assert isMember(endpoint); // don't want to return nulls
@@ -373,12 +407,18 @@ public class TokenMetadata
         lock.readLock().lock();
         try
         {
-            return tokenToEndpointMap.inverse().get(endpoint);
+            return new ArrayList<Token>(tokenToEndpointMap.inverse().get(endpoint));
         }
         finally
         {
             lock.readLock().unlock();
         }
+    }
+
+    @Deprecated
+    public Token getToken(InetAddress endpoint)
+    {
+        return getTokens(endpoint).iterator().next();
     }
 
     public boolean isMember(InetAddress endpoint)
@@ -442,7 +482,7 @@ public class TokenMetadata
         lock.readLock().lock();
         try
         {
-            return new TokenMetadata(HashBiMap.create(tokenToEndpointMap), new Topology(topology));
+            return new TokenMetadata(SortedBiMultiValMap.<Token, InetAddress>create(tokenToEndpointMap, null, inetaddressCmp), new Topology(topology));
         }
         finally
         {
@@ -516,9 +556,18 @@ public class TokenMetadata
         }
     }
 
+    public Collection<Range<Token>> getPrimaryRangesFor(Collection<Token> tokens)
+    {
+        Collection<Range<Token>> ranges = new ArrayList<Range<Token>>(tokens.size());
+        for (Token right : tokens)
+            ranges.add(new Range<Token>(getPredecessor(right), right));
+        return ranges;
+    }
+
+    @Deprecated
     public Range<Token> getPrimaryRangeFor(Token right)
     {
-        return new Range<Token>(getPredecessor(right), right);
+        return getPrimaryRangesFor(Arrays.asList(right)).iterator().next();
     }
 
     public ArrayList<Token> sortedTokens()
@@ -587,8 +636,8 @@ public class TokenMetadata
         return (Token) ((index == (tokens.size() - 1)) ? tokens.get(0) : tokens.get(index + 1));
     }
 
-    /** caller should not modify bootstrapTokens */
-    public Map<Token, InetAddress> getBootstrapTokens()
+    /** caller should not modify bootstrapTokens & should lock when iterating */
+    public BiMultiValMap<Token, InetAddress> getBootstrapTokens()
     {
         return bootstrapTokens;
     }
@@ -802,24 +851,6 @@ public class TokenMetadata
         }
 
         return endpoints;
-    }
-
-    /**
-     * @return a token to endpoint map to consider for read operations on the cluster.
-     */
-    public Map<Token, InetAddress> getTokenToEndpointMapForReading()
-    {
-        lock.readLock().lock();
-        try
-        {
-            Map<Token, InetAddress> map = new HashMap<Token, InetAddress>(tokenToEndpointMap.size());
-            map.putAll(tokenToEndpointMap);
-            return map;
-        }
-        finally
-        {
-            lock.readLock().unlock();
-        }
     }
 
     /**
