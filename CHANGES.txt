@@ -8,9 +8,14 @@
  * Save IndexSummary into new SSTable 'Summary' component (CASSANDRA-2392)
  * Add support for range tombstones (CASSANDRA-3708)
  * Improve MessagingService efficiency (CASSANDRA-3617)
+ * Avoid ID conflicts from concurrent schema changes (CASSANDRA-3794)
+ * Set thrift HSHA server thread limit to unlimet by default (CASSANDRA-4277)
+ * Avoids double serialization of CF id in RowMutation messages
+   (CASSANDRA-4293)
 
 
 1.1.1-dev
+ * add getsstables command to nodetool (CASSANDRA-4199)
  * apply parent CF compaction settings to secondary index CFs (CASSANDRA-4280)
  * preserve commitlog size cap when recycling segments at startup
    (CASSANDRA-4201)
@@ -30,7 +35,6 @@
  * Open 1 sstableScanner per level for leveled compaction (CASSANDRA-4142)
  * Optimize reads when row deletion timestamps allow us to restrict
    the set of sstables we check (CASSANDRA-4116)
- * incremental repair by token range (CASSANDRA-3912)
  * add support for commitlog archiving and point-in-time recovery
    (CASSANDRA-3690)
  * avoid generating redundant compaction tasks during streaming
@@ -75,6 +79,10 @@
  * Check for unknown/invalid compression options (CASSANDRA-4266)
  * (cql3) Adds simple access to column timestamp and ttl (CASSANDRA-4217)
  * (cql3) Fix range queries with secondary indexes (CASSANDRA-4257)
+ * Better error messages from improper input in cli (CASSANDRA-3865)
+ * Try to stop all compaction upon Keyspace or ColumnFamily drop (CASSANDRA-4221)
+ * (cql3) Allow keyspace properties to contain hyphens (CASSANDRA-4278)
+ * (cql3) Correctly validate keyspace access in create table (CASSANDRA-4296)
 Merged from 1.0:
  * Fix super columns bug where cache is not updated (CASSANDRA-4190)
  * fix maxTimestamp to include row tombstones (CASSANDRA-4116)
@@ -86,6 +94,11 @@ Merged from 1.0:
    (CASSANDRA-3985)
  * synchronize LCS getEstimatedTasks to avoid CME (CASSANDRA-4255)
  * ensure unique streaming session id's (CASSANDRA-4223)
+ * kick off background compaction when min/max thresholds change 
+   (CASSANDRA-4279)
+ * improve ability of STCS.getBuckets to deal with 100s of 1000s of
+   sstables, such as when convertinb back from LCS (CASSANDRA-4287)
+ * Oversize integer in CQL throws NumberFormatException (CASSANDRA-4291)
 
 
 1.1.0-final
