@@ -381,13 +381,10 @@ public class DatabaseDescriptor
             if (!CassandraDaemon.rpc_server_types.contains(conf.rpc_server_type.toLowerCase()))
                 throw new ConfigurationException("Unknown rpc_server_type: " + conf.rpc_server_type);
             if (conf.rpc_min_threads == null)
-                conf.rpc_min_threads = conf.rpc_server_type.toLowerCase().equals("hsha")
-                                     ? Runtime.getRuntime().availableProcessors() * 4
-                                     : 16;
+                conf.rpc_min_threads = 16;
+
             if (conf.rpc_max_threads == null)
-                conf.rpc_max_threads = conf.rpc_server_type.toLowerCase().equals("hsha")
-                                     ? Runtime.getRuntime().availableProcessors() * 4
-                                     : Integer.MAX_VALUE;
+                conf.rpc_max_threads = Integer.MAX_VALUE;
 
             /* data file and commit log directories. they get created later, when they're needed. */
             if (conf.commitlog_directory != null && conf.data_file_directories != null && conf.saved_caches_directory != null)
@@ -536,7 +533,6 @@ public class DatabaseDescriptor
         }
 
         Schema.instance.updateVersion();
-        Schema.instance.fixCFMaxId();
     }
 
     private static boolean hasExistingNoSystemTables()
@@ -905,9 +901,9 @@ public class DatabaseDescriptor
         return conf.index_interval;
     }
 
-    public static File getSerializedCachePath(String ksName, String cfName, CacheService.CacheType cacheType)
+    public static File getSerializedCachePath(String ksName, String cfName, CacheService.CacheType cacheType, String version)
     {
-        return new File(conf.saved_caches_directory + File.separator + ksName + "-" + cfName + "-" + cacheType);
+        return new File(conf.saved_caches_directory + File.separator + ksName + "-" + cfName + "-" + cacheType + ((version != null) ? "-" + version + ".db" : ""));
     }
 
     public static int getDynamicUpdateInterval()
