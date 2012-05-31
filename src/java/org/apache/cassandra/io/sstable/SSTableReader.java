@@ -138,10 +138,10 @@ public class SSTableReader extends SSTable
 
     public static SSTableReader open(Descriptor descriptor, Set<Component> components, CFMetaData metadata, IPartitioner partitioner) throws IOException
     {
-        return open(descriptor, components, Collections.<DecoratedKey>emptySet(), null, metadata, partitioner);
+        return open(descriptor, components, null, metadata, partitioner);
     }
 
-    public static SSTableReader open(Descriptor descriptor, Set<Component> components, Set<DecoratedKey> savedKeys, DataTracker tracker, CFMetaData metadata, IPartitioner partitioner) throws IOException
+    public static SSTableReader open(Descriptor descriptor, Set<Component> components, DataTracker tracker, CFMetaData metadata, IPartitioner partitioner) throws IOException
     {
         assert partitioner != null;
         // Minimum components without which we can't do anything
@@ -178,11 +178,11 @@ public class SSTableReader extends SSTable
         // versions before 'c' encoded keys as utf-16 before hashing to the filter
         if (descriptor.version.hasStringsInBloomFilter)
         {
-            sstable.load(true, savedKeys);
+            sstable.load(true);
         }
         else
         {
-            sstable.load(false, savedKeys);
+            sstable.load(false);
             sstable.loadBloomFilter();
         }
         if (logger.isDebugEnabled())
@@ -203,7 +203,6 @@ public class SSTableReader extends SSTable
     }
 
     public static Collection<SSTableReader> batchOpen(Set<Map.Entry<Descriptor, Set<Component>>> entries,
-                                                      final Set<DecoratedKey> savedKeys,
                                                       final DataTracker tracker,
                                                       final CFMetaData metadata,
                                                       final IPartitioner partitioner)
@@ -220,7 +219,7 @@ public class SSTableReader extends SSTable
                     SSTableReader sstable;
                     try
                     {
-                        sstable = open(entry.getKey(), entry.getValue(), savedKeys, tracker, metadata, partitioner);
+                        sstable = open(entry.getKey(), entry.getValue(), tracker, metadata, partitioner);
                     }
                     catch (IOException ex)
                     {
@@ -328,10 +327,8 @@ public class SSTableReader extends SSTable
     /**
      * Loads ifile, dfile and indexSummary, and optionally recreates the bloom filter.
      */
-    private void load(boolean recreatebloom, Set<DecoratedKey> keysToLoadInCache) throws IOException
+    private void load(boolean recreatebloom) throws IOException
     {
-        boolean cacheLoading = keyCache != null && !keysToLoadInCache.isEmpty();
-
         SegmentedFile.Builder ibuilder = SegmentedFile.getBuilder(DatabaseDescriptor.getIndexAccessMode());
         SegmentedFile.Builder dbuilder = compression
                                           ? SegmentedFile.getCompressedBuilder()
@@ -343,7 +340,7 @@ public class SSTableReader extends SSTable
         // try to load summaries from the disk and check if we need
         // to read primary index because we should re-create a BloomFilter or pre-load KeyCache
         final boolean summaryLoaded = loadSummary(this, ibuilder, dbuilder);
-        final boolean readIndex = recreatebloom || cacheLoading || !summaryLoaded;
+        final boolean readIndex = recreatebloom || !summaryLoaded;
         try
         {
             long indexSize = primaryIndex.length();
@@ -369,8 +366,6 @@ public class SSTableReader extends SSTable
 
                 if (recreatebloom)
                     bf.add(decoratedKey.key);
-                if (cacheLoading && keysToLoadInCache.contains(decoratedKey))
-                    cacheKey(decoratedKey, indexEntry);
 
                 // if summary was already read from disk we don't want to re-populate it using primary index
                 if (!summaryLoaded)
@@ -690,12 +685,22 @@ public class SSTableReader extends SSTable
     }
 
     /**
+     * Get position updating key cache and stats.
+     * @see #getPosition(org.apache.cassandra.db.RowPosition, org.apache.cassandra.io.sstable.SSTableReader.Operator, boolean)
+     */
+    public RowIndexEntry getPosition(RowPosition key, Operator op)
+    {
+        return getPosition(key, op, true);
+    }
+
+    /**
      * @param key The key to apply as the rhs to the given Operator. A 'fake' key is allowed to
      * allow key selection by token bounds but only if op != * EQ
      * @param op The Operator defining matching keys: the nearest key to the target matching the operator wins.
+     * @param updateCacheAndStats true if updating stats and cache
      * @return The index entry corresponding to the key, or null if the key is not present
      */
-    public RowIndexEntry getPosition(RowPosition key, Operator op)
+    public RowIndexEntry getPosition(RowPosition key, Operator op, boolean updateCacheAndStats)
     {
         // first, check bloom filter
         if (op == Operator.EQ)
@@ -709,7 +714,7 @@ public class SSTableReader extends SSTable
         if ((op == Operator.EQ || op == Operator.GE) && (key instanceof DecoratedKey))
         {
             DecoratedKey decoratedKey = (DecoratedKey)key;
-            RowIndexEntry cachedPosition = getCachedPosition(new KeyCacheKey(descriptor, decoratedKey.key), true);
+            RowIndexEntry cachedPosition = getCachedPosition(new KeyCacheKey(descriptor, decoratedKey.key), updateCacheAndStats);
             if (cachedPosition != null)
                 return cachedPosition;
         }
@@ -718,7 +723,7 @@ public class SSTableReader extends SSTable
         long sampledPosition = getIndexScanPosition(key);
         if (sampledPosition == -1)
         {
-            if (op == Operator.EQ)
+            if (op == Operator.EQ && updateCacheAndStats)
                 bloomFilterTracker.addFalsePositive();
             // we matched the -1th position: if the operator might match forward, we'll start at the first
             // position. We however need to return the correct index entry for that first position.
@@ -744,20 +749,20 @@ public class SSTableReader extends SSTable
                     if (v == 0)
                     {
                         RowIndexEntry indexEntry = RowIndexEntry.serializer.deserialize(input, descriptor.version);
-                        if (comparison == 0 && keyCache != null && keyCache.getCapacity() > 0)
+                        if (comparison == 0 && keyCache != null && keyCache.getCapacity() > 0 && updateCacheAndStats)
                         {
                             assert key instanceof DecoratedKey; // key can be == to the index key only if it's a true row key
                             DecoratedKey decoratedKey = (DecoratedKey)key;
                             // store exact match for the key
                             cacheKey(decoratedKey, indexEntry);
                         }
-                        if (op == Operator.EQ)
+                        if (op == Operator.EQ && updateCacheAndStats)
                             bloomFilterTracker.addTruePositive();
                         return indexEntry;
                     }
                     if (v < 0)
                     {
-                        if (op == Operator.EQ)
+                        if (op == Operator.EQ && updateCacheAndStats)
                             bloomFilterTracker.addFalsePositive();
                         return null;
                     }
@@ -775,7 +780,7 @@ public class SSTableReader extends SSTable
             }
         }
 
-        if (op == Operator.EQ)
+        if (op == Operator.EQ && updateCacheAndStats)
             bloomFilterTracker.addFalsePositive();
         return null;
     }
