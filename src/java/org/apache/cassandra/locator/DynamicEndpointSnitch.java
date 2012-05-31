@@ -115,7 +115,6 @@ public class DynamicEndpointSnitch extends AbstractEndpointSnitch implements ILa
     @Override
     public void gossiperStarting()
     {
-        super.gossiperStarting();
         subsnitch.gossiperStarting();
     }
 
