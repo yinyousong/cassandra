@@ -27,8 +27,10 @@ import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.config.ConfigurationException;
 import org.apache.cassandra.dht.Token;
-import org.apache.cassandra.locator.IEndpointSnitch.Topology;
+import org.apache.cassandra.locator.TokenMetadata.Topology;
 import org.apache.cassandra.utils.FBUtilities;
+
+import com.google.common.collect.Multimap;
 
 /**
  * This Replication Strategy takes a property file that gives the intended
@@ -85,72 +87,77 @@ public class NetworkTopologyStrategy extends AbstractReplicationStrategy
             for (Map.Entry<String, Integer> dc : datacenters.entrySet())
                 put(dc.getKey(), new HashSet<InetAddress>(dc.getValue()));
         }};
-        Topology topology = snitch.getTopology();
-        // all endpoints in each DC, so we can check when we have exhausted all the members of a DC
-        Map<String, Set<InetAddress>> allEndpoints = topology.getDatacenterEndpoints();
-        // all racks in a DC so we can check when we have exhausted all racks in a DC
-        Map<String, Set<String>> racks = topology.getDatacenterRacks();
-        assert !allEndpoints.isEmpty() && !racks.isEmpty() : "snitch is not aware of any cluster members";
-
-        // tracks the racks we have already placed replicas in
-        Map<String, Set<String>> seenRacks = new HashMap<String, Set<String>>(datacenters.size())
-        {{
-            for (Map.Entry<String, Integer> dc : datacenters.entrySet())
-                put(dc.getKey(), new HashSet<String>());
-        }};
-        // tracks the endpoints that we skipped over while looking for unique racks
-        // when we relax the rack uniqueness we can append this to the current result so we don't have to wind back the iterator
-        Map<String, Set<InetAddress>> skippedDcEndpoints = new HashMap<String, Set<InetAddress>>(datacenters.size())
-        {{
-            for (Map.Entry<String, Integer> dc : datacenters.entrySet())
-                put(dc.getKey(), new LinkedHashSet<InetAddress>());
-        }};
-        Iterator<Token> tokenIter = TokenMetadata.ringIterator(tokenMetadata.sortedTokens(), searchToken, false);
-        while (tokenIter.hasNext() && !replicaEndpoints.isEmpty())
+        Topology topology = tokenMetadata.getTopology();
+        // mostly this will be a copy which is not updated concurrently
+        // but in some cases we are called with StorageService.instance.tokenMetadata, so we have to synchronize
+        synchronized(topology)
         {
-            Token next = tokenIter.next();
-            InetAddress ep = tokenMetadata.getEndpoint(next);
-            String dc = snitch.getDatacenter(ep);
-            // have we already found all replicas for this dc?
-            if (!replicaEndpoints.containsKey(dc) || !datacenters.containsKey(dc))
-                continue;
-            // can we skip checking the rack?
-            if (seenRacks.get(dc).size() == racks.get(dc).size())
+            // all endpoints in each DC, so we can check when we have exhausted all the members of a DC
+            Multimap<String, InetAddress> allEndpoints = topology.getDatacenterEndpoints();
+            // all racks in a DC so we can check when we have exhausted all racks in a DC
+            Map<String, Multimap<String, InetAddress>> racks = topology.getDatacenterRacks();
+            assert !allEndpoints.isEmpty() && !racks.isEmpty() : "not aware of any cluster members";
+    
+            // tracks the racks we have already placed replicas in
+            Map<String, Set<String>> seenRacks = new HashMap<String, Set<String>>(datacenters.size())
+            {{
+                for (Map.Entry<String, Integer> dc : datacenters.entrySet())
+                    put(dc.getKey(), new HashSet<String>());
+            }};
+            // tracks the endpoints that we skipped over while looking for unique racks
+            // when we relax the rack uniqueness we can append this to the current result so we don't have to wind back the iterator
+            Map<String, Set<InetAddress>> skippedDcEndpoints = new HashMap<String, Set<InetAddress>>(datacenters.size())
+            {{
+                for (Map.Entry<String, Integer> dc : datacenters.entrySet())
+                    put(dc.getKey(), new LinkedHashSet<InetAddress>());
+            }};
+            Iterator<Token> tokenIter = TokenMetadata.ringIterator(tokenMetadata.sortedTokens(), searchToken, false);
+            while (tokenIter.hasNext() && !replicaEndpoints.isEmpty())
             {
-                replicaEndpoints.get(dc).add(ep);
-                replicas.add(ep);
-            } else
-            {
-                String rack = snitch.getRack(ep);
-                // is this a new rack?
-                if (seenRacks.get(dc).contains(rack))
-                {
-                    skippedDcEndpoints.get(dc).add(ep);
-                } else
+                Token next = tokenIter.next();
+                InetAddress ep = tokenMetadata.getEndpoint(next);
+                String dc = snitch.getDatacenter(ep);
+                // have we already found all replicas for this dc?
+                if (!replicaEndpoints.containsKey(dc) || !datacenters.containsKey(dc))
+                    continue;
+                // can we skip checking the rack?
+                if (seenRacks.get(dc).size() == racks.get(dc).keySet().size())
                 {
                     replicaEndpoints.get(dc).add(ep);
                     replicas.add(ep);
-                    seenRacks.get(dc).add(rack);
-                    // if we've run out of distinct racks, add the hosts we skipped past already (up to RF)
-                    if (seenRacks.get(dc).size() == racks.get(dc).size() && !skippedDcEndpoints.get(dc).isEmpty())
+                } else
+                {
+                    String rack = snitch.getRack(ep);
+                    // is this a new rack?
+                    if (seenRacks.get(dc).contains(rack))
                     {
-                        Iterator<InetAddress> skippedIt = skippedDcEndpoints.get(dc).iterator();
-                        while (skippedIt.hasNext() && replicaEndpoints.get(dc).size() < Math.min(allEndpoints.get(dc).size(), getReplicationFactor(dc)))
+                        skippedDcEndpoints.get(dc).add(ep);
+                    } else
+                    {
+                        replicaEndpoints.get(dc).add(ep);
+                        replicas.add(ep);
+                        seenRacks.get(dc).add(rack);
+                        // if we've run out of distinct racks, add the hosts we skipped past already (up to RF)
+                        if (seenRacks.get(dc).size() == racks.get(dc).keySet().size() && !skippedDcEndpoints.get(dc).isEmpty())
                         {
-                            InetAddress nextSkipped = skippedIt.next();
-                            replicaEndpoints.get(dc).add(nextSkipped);
-                            replicas.add(nextSkipped);
+                            Iterator<InetAddress> skippedIt = skippedDcEndpoints.get(dc).iterator();
+                            while (skippedIt.hasNext() && replicaEndpoints.get(dc).size() < Math.min(allEndpoints.get(dc).size(), getReplicationFactor(dc)))
+                            {
+                                InetAddress nextSkipped = skippedIt.next();
+                                replicaEndpoints.get(dc).add(nextSkipped);
+                                replicas.add(nextSkipped);
+                            }
                         }
                     }
                 }
-            }
-            // check if we found RF replicas for this DC or whether we exhausted its endpoints
-            if (replicaEndpoints.get(dc).size() >= Math.min(allEndpoints.get(dc).size(), getReplicationFactor(dc)))
-            {
-                if (logger.isDebugEnabled())
-                    logger.debug("{} endpoints in datacenter {} for token {} ",
-                            new Object[] { StringUtils.join(replicaEndpoints.get(dc), ","), dc, searchToken});
-                replicaEndpoints.remove(dc);
+                // check if we found RF replicas for this DC or whether we exhausted its endpoints
+                if (replicaEndpoints.get(dc).size() >= Math.min(allEndpoints.get(dc).size(), getReplicationFactor(dc)))
+                {
+                    if (logger.isDebugEnabled())
+                        logger.debug("{} endpoints in datacenter {} for token {} ",
+                                new Object[] { StringUtils.join(replicaEndpoints.get(dc), ","), dc, searchToken});
+                    replicaEndpoints.remove(dc);
+                }
             }
         }
 
