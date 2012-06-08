@@ -155,36 +155,6 @@ public class Table
     }
 
     /**
-     * Do a cleanup of keys that do not belong locally.
-     */
-    public void forceCleanup(NodeId.OneShotRenewer renewer) throws IOException, ExecutionException, InterruptedException
-    {
-        if (name.equals(SYSTEM_TABLE))
-            throw new UnsupportedOperationException("Cleanup of the system table is neither necessary nor wise");
-
-        // Sort the column families in order of SSTable size, so cleanup of smaller CFs
-        // can free up space for larger ones
-        List<ColumnFamilyStore> sortedColumnFamilies = new ArrayList<ColumnFamilyStore>(columnFamilyStores.values());
-        Collections.sort(sortedColumnFamilies, new Comparator<ColumnFamilyStore>()
-        {
-            // Compare first on size and, if equal, sort by name (arbitrary & deterministic).
-            public int compare(ColumnFamilyStore cf1, ColumnFamilyStore cf2)
-            {
-                long diff = (cf1.getTotalDiskSpaceUsed() - cf2.getTotalDiskSpaceUsed());
-                if (diff > 0)
-                    return 1;
-                if (diff < 0)
-                    return -1;
-                return cf1.columnFamily.compareTo(cf2.columnFamily);
-            }
-        });
-
-        // Cleanup in sorted order to free up space for the larger ones
-        for (ColumnFamilyStore cfs : sortedColumnFamilies)
-            cfs.forceCleanup(renewer);
-    }
-
-    /**
      * Take a snapshot of the specific column family, or the entire set of column families
      * if columnFamily is null with a given timestamp
      *
@@ -372,10 +342,14 @@ public class Table
     }
 
     /**
-     * This method adds the row to the Commit Log associated with this table.
-     * Once this happens the data associated with the individual column families
-     * is also written to the column family store's memtable.
-    */
+     * This method appends a row to the global CommitLog, then updates memtables and indexes.
+     *
+     * @param mutation the row to write.  Must not be modified after calling apply, since commitlog append
+     *                 may happen concurrently, depending on the CL Executor type.
+     * @param writeCommitLog false to disable commitlog append entirely
+     * @param updateIndexes false to disable index updates (used by CollationController "defragmenting")
+     * @throws IOException
+     */
     public void apply(RowMutation mutation, boolean writeCommitLog, boolean updateIndexes) throws IOException
     {
         if (logger.isDebugEnabled())
