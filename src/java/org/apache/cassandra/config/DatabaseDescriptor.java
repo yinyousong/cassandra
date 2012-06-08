@@ -418,7 +418,7 @@ public class DatabaseDescriptor
             {
                 // if key_cache_size_in_mb option was set to "auto" then size of the cache should be "min(5% of Heap (in MB), 100MB)
                 keyCacheSizeInMB = (conf.key_cache_size_in_mb == null)
-                                    ? Math.min((int) (Runtime.getRuntime().totalMemory() * 0.05 / 1024 / 1024), 100)
+                                    ? Math.min(Math.max(1, (int) (Runtime.getRuntime().totalMemory() * 0.05 / 1024 / 1024)), 100)
                                     : conf.key_cache_size_in_mb;
 
                 if (keyCacheSizeInMB < 0)
@@ -1085,5 +1085,10 @@ public class DatabaseDescriptor
     public static boolean populateIOCacheOnFlush()
     {
         return conf.populate_io_cache_on_flush;
+    }
+
+    public static Config.InternodeCompression internodeCompression()
+    {
+        return conf.internode_compression;
     }
 }
