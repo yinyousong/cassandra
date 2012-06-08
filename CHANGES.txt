@@ -1,4 +1,7 @@
 1.2-dev
+ * add inter-node message compression (CASSANDRA-3127)
+ * enforce 1m min keycache for auto (CASSANDRA-4306)
+ * remove COPP (CASSANDRA-2479)
  * Track tombstone expiration and compact when tombstone content is
    higher than a configurable threshold, default 20% (CASSANDRA-3442)
  * update MurmurHash to version 3 (CASSANDRA-2975)
@@ -12,9 +15,17 @@
  * Set thrift HSHA server thread limit to unlimet by default (CASSANDRA-4277)
  * Avoids double serialization of CF id in RowMutation messages
    (CASSANDRA-4293)
+ * fix Summary component and caches to use correct partitioner (CASSANDRA-4289)
 
 
-1.1.1-dev
+1.1.2
+ * enforce 1m min keycache for auto (CASSANDRA-4306)
+ * Have DeletedColumn.isMFD always return true (CASSANDRA-4307)
+Merged from 1.0:
+ * Set gc_grace on index CF to 0 (CASSANDRA-4314)
+
+
+1.1.1
  * add getsstables command to nodetool (CASSANDRA-4199)
  * apply parent CF compaction settings to secondary index CFs (CASSANDRA-4280)
  * preserve commitlog size cap when recycling segments at startup
@@ -83,6 +94,11 @@
  * Try to stop all compaction upon Keyspace or ColumnFamily drop (CASSANDRA-4221)
  * (cql3) Allow keyspace properties to contain hyphens (CASSANDRA-4278)
  * (cql3) Correctly validate keyspace access in create table (CASSANDRA-4296)
+ * Avoid deadlock in migration stage (CASSANDRA-3882)
+ * Take supercolumn names and deletion info into account in memtable throughput
+   (CASSANDRA-4264)
+ * Add back backward compatibility for old style replication factor (CASSANDRA-4294)
+ * Preserve compatibility with pre-1.1 index queries (CASSANDRA_4264)
 Merged from 1.0:
  * Fix super columns bug where cache is not updated (CASSANDRA-4190)
  * fix maxTimestamp to include row tombstones (CASSANDRA-4116)
