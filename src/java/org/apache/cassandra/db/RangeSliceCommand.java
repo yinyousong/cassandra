@@ -42,6 +42,10 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.Schema;
+import org.apache.cassandra.db.filter.*;
+import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.dht.AbstractBounds;
 import org.apache.cassandra.io.IVersionedSerializer;
 import org.apache.cassandra.net.MessageOut;
@@ -63,7 +67,7 @@ public class RangeSliceCommand implements IReadCommand
     public final String column_family;
     public final ByteBuffer super_column;
 
-    public final SlicePredicate predicate;
+    public final IFilter predicate;
     public final List<IndexExpression> row_filter;
 
     public final AbstractBounds<RowPosition> range;
@@ -71,32 +75,32 @@ public class RangeSliceCommand implements IReadCommand
     public final boolean maxIsColumns;
     public final boolean isPaging;
 
-    public RangeSliceCommand(String keyspace, String column_family, ByteBuffer super_column, SlicePredicate predicate, AbstractBounds<RowPosition> range, int maxResults)
+    public RangeSliceCommand(String keyspace, String column_family, ByteBuffer super_column, IFilter predicate, AbstractBounds<RowPosition> range, int maxResults)
     {
         this(keyspace, column_family, super_column, predicate, range, null, maxResults, false, false);
     }
 
-    public RangeSliceCommand(String keyspace, String column_family, ByteBuffer super_column, SlicePredicate predicate, AbstractBounds<RowPosition> range, int maxResults, boolean maxIsColumns, boolean isPaging)
+    public RangeSliceCommand(String keyspace, String column_family, ByteBuffer super_column, IFilter predicate, AbstractBounds<RowPosition> range, int maxResults, boolean maxIsColumns, boolean isPaging)
     {
         this(keyspace, column_family, super_column, predicate, range, null, maxResults, maxIsColumns, false);
     }
 
-    public RangeSliceCommand(String keyspace, ColumnParent column_parent, SlicePredicate predicate, AbstractBounds<RowPosition> range, List<IndexExpression> row_filter, int maxResults)
+    public RangeSliceCommand(String keyspace, ColumnParent column_parent, IFilter predicate, AbstractBounds<RowPosition> range, List<IndexExpression> row_filter, int maxResults)
     {
         this(keyspace, column_parent.getColumn_family(), column_parent.super_column, predicate, range, row_filter, maxResults, false, false);
     }
 
-    public RangeSliceCommand(String keyspace, ColumnParent column_parent, SlicePredicate predicate, AbstractBounds<RowPosition> range, List<IndexExpression> row_filter, int maxResults, boolean maxIsColumns, boolean isPaging)
+    public RangeSliceCommand(String keyspace, ColumnParent column_parent, IFilter predicate, AbstractBounds<RowPosition> range, List<IndexExpression> row_filter, int maxResults, boolean maxIsColumns, boolean isPaging)
     {
         this(keyspace, column_parent.getColumn_family(), column_parent.super_column, predicate, range, row_filter, maxResults, maxIsColumns, isPaging);
     }
 
-    public RangeSliceCommand(String keyspace, String column_family, ByteBuffer super_column, SlicePredicate predicate, AbstractBounds<RowPosition> range, List<IndexExpression> row_filter, int maxResults)
+    public RangeSliceCommand(String keyspace, String column_family, ByteBuffer super_column, IFilter predicate, AbstractBounds<RowPosition> range, List<IndexExpression> row_filter, int maxResults)
     {
         this(keyspace, column_family, super_column, predicate, range, row_filter, maxResults, false, false);
     }
 
-    public RangeSliceCommand(String keyspace, String column_family, ByteBuffer super_column, SlicePredicate predicate, AbstractBounds<RowPosition> range, List<IndexExpression> row_filter, int maxResults, boolean maxIsColumns, boolean isPaging)
+    public RangeSliceCommand(String keyspace, String column_family, ByteBuffer super_column, IFilter predicate, AbstractBounds<RowPosition> range, List<IndexExpression> row_filter, int maxResults, boolean maxIsColumns, boolean isPaging)
     {
         this.keyspace = keyspace;
         this.column_family = column_family;
@@ -133,10 +137,57 @@ public class RangeSliceCommand implements IReadCommand
     {
         return keyspace;
     }
+
+    // Convert to a equivalent IndexScanCommand for backward compatibility sake
+    public IndexScanCommand toIndexScanCommand()
+    {
+        assert row_filter != null && !row_filter.isEmpty();
+        if (maxIsColumns || isPaging)
+            throw new IllegalStateException("Cannot proceed with range query as the remote end has a version < 1.1. Please update the full cluster first.");
+
+        CFMetaData cfm = Schema.instance.getCFMetaData(keyspace, column_family);
+        try
+        {
+            if (!ThriftValidation.validateFilterClauses(cfm, row_filter))
+                throw new IllegalStateException("Cannot proceed with non-indexed query as the remote end has a version < 1.1. Please update the full cluster first.");
+        }
+        catch (InvalidRequestException e)
+        {
+            throw new RuntimeException(e);
+        }
+
+        RowPosition start = range.left;
+        ByteBuffer startKey = ByteBufferUtil.EMPTY_BYTE_BUFFER;
+        if (start instanceof DecoratedKey)
+        {
+            startKey = ((DecoratedKey)start).key;
+        }
+
+        IndexClause clause = new IndexClause(row_filter, startKey, maxResults);
+        // IndexScanCommand is deprecated so don't bother
+        SlicePredicate pred = RangeSliceCommandSerializer.asSlicePredicate(predicate);
+        return new IndexScanCommand(keyspace, column_family, clause, pred, range);
+    }
 }
 
 class RangeSliceCommandSerializer implements IVersionedSerializer<RangeSliceCommand>
 {
+    // For compatibility with pre-1.2 sake. We should remove at some point.
+    public static SlicePredicate asSlicePredicate(IFilter predicate)
+    {
+        SlicePredicate sp = new SlicePredicate();
+        if (predicate instanceof NamesQueryFilter)
+        {
+            sp.setColumn_names(new ArrayList<ByteBuffer>(((NamesQueryFilter)predicate).columns));
+        }
+        else
+        {
+            SliceQueryFilter sqf = (SliceQueryFilter)predicate;
+            sp.setSlice_range(new SliceRange(sqf.start, sqf.finish, sqf.reversed, sqf.count));
+        }
+        return sp;
+    }
+
     public void serialize(RangeSliceCommand sliceCommand, DataOutput dos, int version) throws IOException
     {
         dos.writeUTF(sliceCommand.keyspace);
@@ -148,27 +199,11 @@ class RangeSliceCommandSerializer implements IVersionedSerializer<RangeSliceComm
 
         if (version < MessagingService.VERSION_12)
         {
-            FBUtilities.serialize(new TSerializer(new TBinaryProtocol.Factory()), sliceCommand.predicate, dos);
+            FBUtilities.serialize(new TSerializer(new TBinaryProtocol.Factory()), asSlicePredicate(sliceCommand.predicate), dos);
         }
         else
         {
-            SliceRange range = sliceCommand.predicate.slice_range;
-            if (range != null)
-            {
-                dos.writeByte(0);
-                ByteBufferUtil.writeWithShortLength(range.start, dos);
-                ByteBufferUtil.writeWithShortLength(range.finish, dos);
-                dos.writeBoolean(range.reversed);
-                dos.writeInt(range.count);
-            }
-            else
-            {
-                dos.writeByte(1);
-                List<ByteBuffer> columns = sliceCommand.predicate.column_names;
-                dos.writeInt(columns.size());
-                for (ByteBuffer column : columns)
-                    ByteBufferUtil.writeWithShortLength(column, dos);
-            }
+            IFilter.Serializer.instance.serialize(sliceCommand.predicate, dos, version);
         }
 
         if (version >= MessagingService.VERSION_11)
@@ -218,30 +253,17 @@ class RangeSliceCommandSerializer implements IVersionedSerializer<RangeSliceComm
             superColumn = ByteBuffer.wrap(buf);
         }
 
-        SlicePredicate pred = new SlicePredicate();
+        IFilter predicate;
+        AbstractType<?> comparator = ColumnFamily.getComparatorFor(keyspace, columnFamily, superColumn);
         if (version < MessagingService.VERSION_12)
         {
+            SlicePredicate pred = new SlicePredicate();
             FBUtilities.deserialize(new TDeserializer(new TBinaryProtocol.Factory()), pred, dis);
+            predicate = ThriftValidation.asIFilter(pred, comparator);
         }
         else
         {
-            int type = dis.readByte();
-            if (type == 0)
-            {
-                pred.slice_range = new SliceRange(ByteBufferUtil.readWithShortLength(dis),
-                                                  ByteBufferUtil.readWithShortLength(dis),
-                                                  dis.readBoolean(),
-                                                  dis.readInt());
-            }
-            else
-            {
-                assert type == 1;
-                int count = dis.readInt();
-                List<ByteBuffer> columns = new ArrayList<ByteBuffer>(count);
-                for (int i = 0; i < count; i++)
-                    columns.add(ByteBufferUtil.readWithShortLength(dis));
-                pred.column_names = columns;
-            }
+            predicate = IFilter.Serializer.instance.deserialize(dis, version, comparator);
         }
 
         List<IndexExpression> rowFilter = null;
@@ -276,7 +298,7 @@ class RangeSliceCommandSerializer implements IVersionedSerializer<RangeSliceComm
             maxIsColumns = dis.readBoolean();
             isPaging = dis.readBoolean();
         }
-        return new RangeSliceCommand(keyspace, columnFamily, superColumn, pred, range, rowFilter, maxResults, maxIsColumns, isPaging);
+        return new RangeSliceCommand(keyspace, columnFamily, superColumn, predicate, range, rowFilter, maxResults, maxIsColumns, isPaging);
     }
 
     public long serializedSize(RangeSliceCommand rsc, int version)
@@ -300,7 +322,7 @@ class RangeSliceCommandSerializer implements IVersionedSerializer<RangeSliceComm
             TSerializer ser = new TSerializer(new TBinaryProtocol.Factory());
             try
             {
-                int predicateLength = ser.serialize(rsc.predicate).length;
+                int predicateLength = ser.serialize(asSlicePredicate(rsc.predicate)).length;
                 if (version < MessagingService.VERSION_12)
                     size += TypeSizes.NATIVE.sizeof(predicateLength);
                 size += predicateLength;
@@ -312,22 +334,7 @@ class RangeSliceCommandSerializer implements IVersionedSerializer<RangeSliceComm
         }
         else
         {
-            SliceRange range = rsc.predicate.slice_range;
-            size += 1;
-            if (range != null)
-            {
-                size += TypeSizes.NATIVE.sizeofWithShortLength(range.start);
-                size += TypeSizes.NATIVE.sizeofWithShortLength(range.finish);
-                size += TypeSizes.NATIVE.sizeof(range.reversed);
-                size += TypeSizes.NATIVE.sizeof(range.count);
-            }
-            else
-            {
-                List<ByteBuffer> columns = rsc.predicate.column_names;
-                size += TypeSizes.NATIVE.sizeof(columns.size());
-                for (ByteBuffer column : columns)
-                    size += TypeSizes.NATIVE.sizeofWithShortLength(column);
-            }
+            size += IFilter.Serializer.instance.serializedSize(rsc.predicate, version);
         }
 
         if (version >= MessagingService.VERSION_11)
