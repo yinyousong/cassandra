@@ -1,4 +1,7 @@
 1.2-dev
+ * update MS protocol with a version handshake + broadcast address id
+   (CASSANDRA-4311)
+ * multithreaded hint replay (CASSANDRA-4189)
  * add inter-node message compression (CASSANDRA-3127)
  * enforce 1m min keycache for auto (CASSANDRA-4306)
  * remove COPP (CASSANDRA-2479)
@@ -16,11 +19,21 @@
  * Avoids double serialization of CF id in RowMutation messages
    (CASSANDRA-4293)
  * fix Summary component and caches to use correct partitioner (CASSANDRA-4289)
+ * stream compressed sstables directly with java nio (CASSANDRA-4297)
 
 
 1.1.2
+ * fix bug in sstable blacklisting with LCS (CASSANDRA-4343)
+ * LCS no longer promotes tiny sstables out of L0 (CASSANDRA-4341)
+ * skip tombstones during hint replay (CASSANDRA-4320)
+ * fix NPE in compactionstats (CASSANDRA-4318)
  * enforce 1m min keycache for auto (CASSANDRA-4306)
  * Have DeletedColumn.isMFD always return true (CASSANDRA-4307)
+ * ex msg for cql3 order by constraints says primary filter can be an IN clause 
+   which is misleading (CASSANDRA-4319)
+ * (cql3) Reject (not yet supported) creation of 2ndardy indexes on tables with
+   composite primary keys (CASSANDRA-4328)
+ * Set JVM stack size to 160k for java 7 (CASSANDRA-4275)
 Merged from 1.0:
  * Set gc_grace on index CF to 0 (CASSANDRA-4314)
 
@@ -98,7 +111,7 @@ Merged from 1.0:
  * Take supercolumn names and deletion info into account in memtable throughput
    (CASSANDRA-4264)
  * Add back backward compatibility for old style replication factor (CASSANDRA-4294)
- * Preserve compatibility with pre-1.1 index queries (CASSANDRA_4264)
+ * Preserve compatibility with pre-1.1 index queries (CASSANDRA-4262)
 Merged from 1.0:
  * Fix super columns bug where cache is not updated (CASSANDRA-4190)
  * fix maxTimestamp to include row tombstones (CASSANDRA-4116)
