@@ -1098,7 +1098,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         //   versions  < 1.2 .....: STATUS,TOKEN
         //   versions >= 1.2 .....: STATUS,HOST_ID,TOKEN,TOKEN,...
         int tokenPos;
-        if (Gossiper.instance.getVersion(endpoint) >= MessagingService.VERSION_12)
+        if (MessagingService.instance().getVersion(endpoint) >= MessagingService.VERSION_12)
         {
             assert pieces.length >= 3;
             tokenPos = 2;
@@ -1130,7 +1130,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         tokenMetadata.addBootstrapTokens(tokens, endpoint);
         calculatePendingRanges();
 
-        if (Gossiper.instance.getVersion(endpoint) >= MessagingService.VERSION_12)
+        if (MessagingService.instance().getVersion(endpoint) >= MessagingService.VERSION_12)
             tokenMetadata.updateHostId(UUID.fromString(pieces[1]), endpoint);
     }
 
@@ -1149,7 +1149,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         //   versions  < 1.2 .....: STATUS,TOKEN
         //   versions >= 1.2 .....: STATUS,HOST_ID,TOKEN,TOKEN,...
         int tokensPos;
-        if (Gossiper.instance.getVersion(endpoint) >= MessagingService.VERSION_12)
+        if (MessagingService.instance().getVersion(endpoint) >= MessagingService.VERSION_12)
         {
             assert pieces.length >= 3;
             tokensPos = 2;
@@ -1168,7 +1168,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
             logger.info("Node " + endpoint + " state jump to normal");
 
         // Order Matters, TM.updateHostID() should be called before TM.updateNormalToken(), (see CASSANDRA-4300).
-        if (Gossiper.instance.getVersion(endpoint) >= MessagingService.VERSION_12)
+        if (MessagingService.instance().getVersion(endpoint) >= MessagingService.VERSION_12)
             tokenMetadata.updateHostId(UUID.fromString(pieces[1]), endpoint);
 
         Set<Token> tokensToUpdateInMetadata = new HashSet<Token>();
