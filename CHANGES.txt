@@ -1,4 +1,5 @@
 1.2-dev
+ * rewrite key cache save/load to use only sequential i/o (CASSANDRA-3762)
  * update MS protocol with a version handshake + broadcast address id
    (CASSANDRA-4311)
  * multithreaded hint replay (CASSANDRA-4189)
@@ -15,14 +16,18 @@
  * Add support for range tombstones (CASSANDRA-3708)
  * Improve MessagingService efficiency (CASSANDRA-3617)
  * Avoid ID conflicts from concurrent schema changes (CASSANDRA-3794)
- * Set thrift HSHA server thread limit to unlimet by default (CASSANDRA-4277)
+ * Set thrift HSHA server thread limit to unlimited by default (CASSANDRA-4277)
  * Avoids double serialization of CF id in RowMutation messages
    (CASSANDRA-4293)
  * fix Summary component and caches to use correct partitioner (CASSANDRA-4289)
  * stream compressed sstables directly with java nio (CASSANDRA-4297)
+ * Support multiple ranges in SliceQueryFilter (CASSANDRA-3885)
+ * Add column metadata to system column families (CASSANDRA-4018)
 
 
 1.1.2
+ * Raise a meaningful exception instead of NPE when PFS encounters
+   an unconfigured node + no default (CASSANDRA-4349)
  * fix bug in sstable blacklisting with LCS (CASSANDRA-4343)
  * LCS no longer promotes tiny sstables out of L0 (CASSANDRA-4341)
  * skip tombstones during hint replay (CASSANDRA-4320)
@@ -34,6 +39,7 @@
  * (cql3) Reject (not yet supported) creation of 2ndardy indexes on tables with
    composite primary keys (CASSANDRA-4328)
  * Set JVM stack size to 160k for java 7 (CASSANDRA-4275)
+ * cqlsh: add COPY command to load data from CSV flat files (CASSANDRA-4012)
 Merged from 1.0:
  * Set gc_grace on index CF to 0 (CASSANDRA-4314)
 
