@@ -1227,7 +1227,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
     {
         assert pieces.length >= 2;
         Collection<Token> tokens = null;
-        Integer version = Gossiper.instance.getVersion(endpoint);
+        Integer version = MessagingService.instance().getVersion(endpoint);
         if (version < MessagingService.VERSION_12)
             tokens = Arrays.asList(getPartitioner().getTokenFactory().fromString(pieces[1]));
         else
@@ -1292,7 +1292,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
 
             if (VersionedValue.REMOVED_TOKEN.equals(state))
             {
-                excise(removeToken, endpoint, extractExpireTime(pieces, Gossiper.instance.getVersion(endpoint)));
+                excise(removeToken, endpoint, extractExpireTime(pieces, MessagingService.instance().getVersion(endpoint)));
             }
             else if (VersionedValue.REMOVING_TOKEN.equals(state))
             {
