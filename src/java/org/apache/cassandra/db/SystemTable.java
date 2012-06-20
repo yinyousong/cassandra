@@ -20,6 +20,7 @@ package org.apache.cassandra.db;
 import java.io.IOError;
 import java.io.IOException;
 import java.net.InetAddress;
+import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.ExecutionException;
@@ -49,6 +50,8 @@ import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.NodeId;
 import org.apache.cassandra.utils.UUIDGen;
 
+import static org.apache.cassandra.utils.ByteBufferUtil.EMPTY_BYTE_BUFFER;;
+
 public class SystemTable
 {
     private static final Logger logger = LoggerFactory.getLogger(SystemTable.class);
@@ -56,6 +59,7 @@ public class SystemTable
     // see CFMetaData for schema definitions
     public static final String PEERS_CF = "peers";
     public static final String LOCAL_CF = "local";
+    public static final String LOCAL_TOKENS_CF = "local_tokens";
     public static final String INDEX_CF = "IndexInfo";
     public static final String NODE_ID_CF = "NodeIdInfo";
     public static final String HINTS_CF = "hints";
@@ -122,7 +126,11 @@ public class SystemTable
 
             ColumnFamily cf = ColumnFamily.create(Table.SYSTEM_TABLE, LOCAL_CF);
             cf.addColumn(Column.create(oldColumns.next().value(), FBUtilities.timestampMicros(), "cluster_name"));
-            cf.addColumn(Column.create(oldColumns.next().value(), FBUtilities.timestampMicros(), "token_bytes"));
+
+            // Serialize the old token as a collection of (one )tokens.
+            Token token = StorageService.getPartitioner().getTokenFactory().fromByteArray(oldColumns.next().value());
+            cf.addColumn(Column.create(serializeTokens(Collections.singleton(token)), FBUtilities.timestampMicros(), "token_bytes"));
+
             // (assume that any node getting upgraded was bootstrapped, since that was stored in a separate row for no particular reason)
             cf.addColumn(Column.create(true, FBUtilities.timestampMicros(), "bootstrapped"));
             RowMutation rm = new RowMutation(Table.SYSTEM_TABLE, LOCAL_KEY);
@@ -143,57 +151,90 @@ public class SystemTable
     /**
      * Record token being used by another node
      */
+    @Deprecated
     public static synchronized void updateToken(InetAddress ep, Token token)
+    {
+        updateTokens(ep, Arrays.asList(token));
+    }
+
+    public static synchronized void updateTokens(InetAddress ep, Collection<Token> tokens)
     {
         if (ep.equals(FBUtilities.getBroadcastAddress()))
         {
-            removeToken(token);
+            removeTokens(tokens);
             return;
         }
 
         IPartitioner p = StorageService.getPartitioner();
-        ColumnFamily cf = ColumnFamily.create(Table.SYSTEM_TABLE, PEERS_CF);
-        cf.addColumn(Column.create(ep, FBUtilities.timestampMicros(), "peer"));
-        RowMutation rm = new RowMutation(Table.SYSTEM_TABLE, p.getTokenFactory().toByteArray(token));
-        rm.add(cf);
+        long timestampMicros = FBUtilities.timestampMicros();
+ 
         try
         {
-            rm.apply();
+            for (Token token : tokens)
+            {
+                ColumnFamily cf = ColumnFamily.create(Table.SYSTEM_TABLE, PEERS_CF);
+                cf.addColumn(Column.create(ep, timestampMicros, "peer"));
+                RowMutation rm = new RowMutation(Table.SYSTEM_TABLE, p.getTokenFactory().toByteArray(token));
+                rm.add(cf);
+                rm.apply();
+            }
         }
         catch (IOException e)
         {
             throw new IOError(e);
         }
+
         forceBlockingFlush(PEERS_CF);
     }
 
     /**
      * Remove stored token being used by another node
      */
+    @Deprecated
     public static synchronized void removeToken(Token token)
     {
+        removeTokens(Arrays.asList(token));
+    }
+
+    public static synchronized void removeTokens(Collection<Token> tokens)
+    {
         IPartitioner p = StorageService.getPartitioner();
-        RowMutation rm = new RowMutation(Table.SYSTEM_TABLE, p.getTokenFactory().toByteArray(token));
-        rm.delete(new QueryPath(PEERS_CF, null, null), FBUtilities.timestampMicros());
+        long timestampMicros = FBUtilities.timestampMicros();
+
         try
         {
-            rm.apply();
+            for (Token token : tokens)
+            {
+                RowMutation rm = new RowMutation(Table.SYSTEM_TABLE, p.getTokenFactory().toByteArray(token));
+                rm.delete(new QueryPath(PEERS_CF, null, null), timestampMicros);
+                rm.apply();
+            }
         }
         catch (IOException e)
         {
             throw new IOError(e);
         }
+
         forceBlockingFlush(PEERS_CF);
     }
 
     /**
      * This method is used to update the System Table with the new token for this node
     */
+    @Deprecated
     public static synchronized void updateToken(Token token)
+    {
+        updateTokens(Arrays.asList(token));
+    }
+
+    /**
+     * This method is used to update the System Table with the new tokens for this node
+    */
+    public static synchronized void updateTokens(Collection<Token> tokens)
     {
         IPartitioner p = StorageService.getPartitioner();
         ColumnFamily cf = ColumnFamily.create(Table.SYSTEM_TABLE, LOCAL_CF);
-        cf.addColumn(Column.create(p.getTokenFactory().toByteArray(token), FBUtilities.timestampMicros(), "token_bytes"));
+        cf.addColumn(Column.create(serializeTokens(tokens), FBUtilities.timestampMicros(), "token_bytes"));
         RowMutation rm = new RowMutation(Table.SYSTEM_TABLE, LOCAL_KEY);
         rm.add(cf);
         try
@@ -206,6 +247,53 @@ public class SystemTable
         }
 
         forceBlockingFlush(LOCAL_CF);
+    }
+
+    /** Serialize a collection of tokens to bytes */
+    private static ByteBuffer serializeTokens(Collection<Token> tokens)
+    {
+        // Guesstimate the total number of bytes needed
+        int estCapacity = (tokens.size() * 16) + (tokens.size() * 2);
+        ByteBuffer toks = ByteBuffer.allocate(estCapacity);
+        IPartitioner p = StorageService.getPartitioner();
+
+        for (Token token : tokens)
+        {
+            ByteBuffer tokenBytes = p.getTokenFactory().toByteArray(token);
+
+            // If we blow the buffer, grow it by double
+            if (toks.remaining() < (2 + tokenBytes.remaining()))
+            {
+                estCapacity = estCapacity * 2;
+                ByteBuffer newToks = ByteBuffer.allocate(estCapacity);
+                toks.flip();
+                newToks.put(toks);
+                toks = newToks;
+            }
+            
+            toks.putShort((short)tokenBytes.remaining());
+            toks.put(tokenBytes);
+        }
+        
+        toks.flip();
+        return toks;
+    }
+    
+    private static Collection<Token> deserializeTokens(ByteBuffer tokenBytes)
+    {
+        List<Token> tokens = new ArrayList<Token>();
+        IPartitioner p = StorageService.getPartitioner();
+
+        while(tokenBytes.hasRemaining())
+        {
+            short len = tokenBytes.getShort();
+            ByteBuffer dup = tokenBytes.slice();
+            dup.limit(len);
+            tokenBytes.position(tokenBytes.position() + len);
+            tokens.add(p.getTokenFactory().fromByteArray(dup));
+        }
+
+        return tokens;
     }
 
     private static void forceBlockingFlush(String cfname)
@@ -290,12 +378,18 @@ public class SystemTable
             throw new ConfigurationException("Saved cluster name " + savedClusterName + " != configured name " + DatabaseDescriptor.getClusterName());
     }
 
+    @Deprecated
     public static Token getSavedToken()
+    {
+        return getSavedTokens().iterator().next();
+    }
+
+    public static Collection<Token> getSavedTokens()
     {
         Table table = Table.open(Table.SYSTEM_TABLE);
         QueryFilter filter = QueryFilter.getNamesFilter(decorate(LOCAL_KEY), new QueryPath(LOCAL_CF), ByteBufferUtil.bytes("token_bytes"));
         ColumnFamily cf = table.getColumnFamilyStore(LOCAL_CF).getColumnFamily(filter);
-        return cf == null ? null : StorageService.getPartitioner().getTokenFactory().fromByteArray(cf.columns.iterator().next().value());
+        return cf == null ? null : deserializeTokens(cf.columns.iterator().next().value());
     }
 
     public static int incrementAndGetGeneration() throws IOException
