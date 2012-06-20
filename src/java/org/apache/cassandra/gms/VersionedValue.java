@@ -68,6 +68,8 @@ public class VersionedValue implements Comparable<VersionedValue>
 
     // values for ApplicationState.REMOVAL_COORDINATOR
     public final static String REMOVAL_COORDINATOR = "REMOVER";
+    // network proto version from MS
+    public final static String NET_VERSION = "NET_VERSION";
 
     public final int version;
     public final String value;
@@ -221,6 +223,11 @@ public class VersionedValue implements Comparable<VersionedValue>
         public VersionedValue releaseVersion()
         {
             return new VersionedValue(FBUtilities.getReleaseVersionString());
+        }
+        
+        public VersionedValue networkVersion()
+        {
+            return new VersionedValue(String.valueOf(MessagingService.current_version));
         }
 
         public VersionedValue internalIP(String private_ip)
