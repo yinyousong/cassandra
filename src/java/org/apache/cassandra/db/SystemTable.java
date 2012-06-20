@@ -20,7 +20,6 @@ package org.apache.cassandra.db;
 import java.io.IOError;
 import java.io.IOException;
 import java.net.InetAddress;
-import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.ExecutionException;
@@ -50,8 +49,6 @@ import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.NodeId;
 import org.apache.cassandra.utils.UUIDGen;
 
-import static org.apache.cassandra.utils.ByteBufferUtil.EMPTY_BYTE_BUFFER;;
-
 public class SystemTable
 {
     private static final Logger logger = LoggerFactory.getLogger(SystemTable.class);
@@ -59,7 +56,6 @@ public class SystemTable
     // see CFMetaData for schema definitions
     public static final String PEERS_CF = "peers";
     public static final String LOCAL_CF = "local";
-    public static final String LOCAL_TOKENS_CF = "local_tokens";
     public static final String INDEX_CF = "IndexInfo";
     public static final String NODE_ID_CF = "NodeIdInfo";
     public static final String HINTS_CF = "hints";
