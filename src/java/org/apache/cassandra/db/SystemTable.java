@@ -385,7 +385,7 @@ public class SystemTable
         Table table = Table.open(Table.SYSTEM_TABLE);
         QueryFilter filter = QueryFilter.getNamesFilter(decorate(LOCAL_KEY), new QueryPath(LOCAL_CF), ByteBufferUtil.bytes("token_bytes"));
         ColumnFamily cf = table.getColumnFamilyStore(LOCAL_CF).getColumnFamily(filter);
-        return cf == null ? null : deserializeTokens(cf.columns.iterator().next().value());
+        return cf == null ? Collections.<Token>emptyList() : deserializeTokens(cf.columns.iterator().next().value());
     }
 
     public static int incrementAndGetGeneration() throws IOException
