@@ -93,7 +93,7 @@ public class TokenMetadata
     /* list of subscribers that are notified when the tokenToEndpointMap changed */
     private final CopyOnWriteArrayList<AbstractReplicationStrategy> subscribers = new CopyOnWriteArrayList<AbstractReplicationStrategy>();
 
-    private final Comparator<InetAddress> inetaddressCmp = new Comparator<InetAddress>()
+    private static final Comparator<InetAddress> inetaddressCmp = new Comparator<InetAddress>()
     {
         @Override
         public int compare(InetAddress o1, InetAddress o2)
