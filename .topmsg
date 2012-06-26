@@ -1,6 +1,6 @@
 From: Sam Overton <sam@acunu.com>
-Subject: [PATCH] p/3881/00_snitch_topology
+Subject: [PATCH] p/3881/01_calc_natural_endpoints
 
-AbstractEndpointSnitch tracks the topology 
+single pass O(RF) calculateNaturalEndpoints
 
 Signed-off-by: Sam Overton <sam@acunu.com>
