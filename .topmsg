@@ -1,0 +1,6 @@
+From: Sam Overton <sam@acunu.com>
+Subject: [PATCH] p/3881/00_snitch_topology
+
+AbstractEndpointSnitch tracks the topology 
+
+Signed-off-by: Sam Overton <sam@acunu.com>

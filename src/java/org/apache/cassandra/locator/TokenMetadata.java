@@ -26,11 +26,13 @@ import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import com.google.common.collect.*;
+
 import org.apache.cassandra.utils.Pair;
 import org.apache.commons.lang.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.gms.FailureDetector;
@@ -84,19 +86,19 @@ public class TokenMetadata
     private final ReadWriteLock lock = new ReentrantReadWriteLock(true);
     private ArrayList<Token> sortedTokens;
 
+    private final Topology topology;
     /* list of subscribers that are notified when the tokenToEndpointMap changed */
     private final CopyOnWriteArrayList<AbstractReplicationStrategy> subscribers = new CopyOnWriteArrayList<AbstractReplicationStrategy>();
 
     public TokenMetadata()
     {
-        this(null);
+        this(HashBiMap.<Token, InetAddress>create(), new Topology());
     }
 
-    public TokenMetadata(BiMap<Token, InetAddress> tokenToEndpointMap)
+    public TokenMetadata(BiMap<Token, InetAddress> tokenToEndpointMap, Topology topology)
     {
-        if (tokenToEndpointMap == null)
-            tokenToEndpointMap = HashBiMap.create();
         this.tokenToEndpointMap = tokenToEndpointMap;
+        this.topology = topology;
         endpointToHostIdMap = HashBiMap.create();
         sortedTokens = sortTokens();
     }
@@ -161,9 +163,13 @@ public class TokenMetadata
                 if (!endpoint.equals(prev))
                 {
                     if (prev != null)
+                    {
                         logger.warn("Token " + token + " changing ownership from " + prev + " to " + endpoint);
+                        topology.removeEndpoint(prev);
+                    }
                     shouldSortTokens = true;
                 }
+                topology.addEndpoint(endpoint);
                 leavingEndpoints.remove(endpoint);
                 removeFromMoving(endpoint); // also removing this endpoint from moving
             }
@@ -315,6 +321,7 @@ public class TokenMetadata
         {
             bootstrapTokens.inverse().remove(endpoint);
             tokenToEndpointMap.inverse().remove(endpoint);
+            topology.removeEndpoint(endpoint);
             leavingEndpoints.remove(endpoint);
             endpointToHostIdMap.remove(endpoint);
             sortedTokens = sortTokens();
@@ -431,7 +438,7 @@ public class TokenMetadata
         lock.readLock().lock();
         try
         {
-            return new TokenMetadata(HashBiMap.create(tokenToEndpointMap));
+            return new TokenMetadata(HashBiMap.create(tokenToEndpointMap), new Topology(topology));
         }
         finally
         {
@@ -662,6 +669,7 @@ public class TokenMetadata
     {
         bootstrapTokens.clear();
         tokenToEndpointMap.clear();
+        topology.clear();
         leavingEndpoints.clear();
         pendingRanges.clear();
         endpointToHostIdMap.clear();
@@ -830,6 +838,108 @@ public class TokenMetadata
         finally
         {
             lock.readLock().unlock();
+        }
+    }
+
+    public Topology getTopology()
+    {
+        return topology;
+    }
+
+    /**
+     * Tracks the assignment of racks and endpoints in each datacenter for all the "normal" endpoints
+     * in this TokenMetadata. This allows faster calculation of endpoints in NetworkTopologyStrategy.
+     */
+    public static class Topology
+    {
+        /** multi-map of DC to endpoints in that DC */
+        private final Multimap<String, InetAddress> dcEndpoints;
+        /** map of DC to multi-map of rack to endpoints in that rack */
+        private final Map<String, Multimap<String, InetAddress>> dcRacks;
+        /** reverse-lookup map for endpoint to current known dc/rack assignment */
+        private final Map<InetAddress, Pair<String, String>> currentLocations;
+
+        protected Topology()
+        {
+            dcEndpoints = HashMultimap.create();
+            dcRacks = new HashMap<String, Multimap<String, InetAddress>>();
+            currentLocations = new HashMap<InetAddress, Pair<String, String>>();
+        }
+
+        protected synchronized void clear()
+        {
+            dcEndpoints.clear();
+            dcRacks.clear();
+            currentLocations.clear();
+        }
+
+        /**
+         * construct deep-copy of other
+         */
+        protected Topology(Topology other)
+        {
+            synchronized (other)
+            {
+                dcEndpoints = HashMultimap.create(other.dcEndpoints);
+                dcRacks = new HashMap<String, Multimap<String, InetAddress>>();
+                for (String dc : other.dcRacks.keySet())
+                    dcRacks.put(dc, HashMultimap.create(other.dcRacks.get(dc)));
+                currentLocations = new HashMap<InetAddress, Pair<String, String>>(other.currentLocations);
+            }
+        }
+
+        /**
+         * Stores current DC/rack assignment for ep
+         */
+        protected synchronized void addEndpoint(InetAddress ep)
+        {
+            IEndpointSnitch snitch = DatabaseDescriptor.getEndpointSnitch();
+            String dc = snitch.getDatacenter(ep);
+            String rack = snitch.getRack(ep);
+            Pair<String, String> current = currentLocations.get(ep);
+            if (current != null)
+            {
+                if (current.left.equals(dc) && current.right.equals(rack))
+                    return;
+                dcRacks.get(current.left).remove(current.right, ep);
+                dcEndpoints.remove(current.left, ep);
+            }
+
+            dcEndpoints.put(dc, ep);
+
+            if (!dcRacks.containsKey(dc))
+                dcRacks.put(dc, HashMultimap.<String, InetAddress>create());
+            dcRacks.get(dc).put(rack, ep);
+
+            currentLocations.put(ep, new Pair<String, String>(dc, rack));
+        }
+
+        /**
+         * Removes current DC/rack assignment for ep
+         */
+        protected synchronized void removeEndpoint(InetAddress ep)
+        {
+            if (!currentLocations.containsKey(ep))
+                return;
+            Pair<String, String> current = currentLocations.remove(ep);
+            dcEndpoints.remove(current.left, ep);
+            dcRacks.get(current.left).remove(current.right, ep);
+        }
+
+        /**
+         * @return multi-map of DC to endpoints in that DC
+         */
+        public Multimap<String, InetAddress> getDatacenterEndpoints()
+        {
+            return dcEndpoints;
+        }
+
+        /**
+         * @return map of DC to multi-map of rack to endpoints in that rack
+         */
+        public Map<String, Multimap<String, InetAddress>> getDatacenterRacks()
+        {
+            return dcRacks;
         }
     }
 }
