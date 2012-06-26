@@ -1,6 +1,6 @@
 From: Sam Overton <sam@acunu.com>
-Subject: [PATCH] p/4125/01_admin_tools
+Subject: [PATCH] p/4127/01_migration_path
 
-Modifications to nodetool for viewing/managing vnodes
+Allow migration from 1 token to many tokens after upgrade
 
 Signed-off-by: Sam Overton <sam@acunu.com>
