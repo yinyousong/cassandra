@@ -104,15 +104,11 @@ public class TokenMetadata
     
     public TokenMetadata()
     {
-        this(null, null);
+        this(SortedBiMultiValMap.<Token, InetAddress>create(null, inetaddressCmp), new Topology());
     }
 
     public TokenMetadata(BiMultiValMap<Token, InetAddress> tokenToEndpointMap, Topology topology)
     {
-        if (tokenToEndpointMap == null)
-            tokenToEndpointMap = SortedBiMultiValMap.<Token, InetAddress>create(null, inetaddressCmp);
-        if (topology == null)
-            topology = new Topology();
         this.tokenToEndpointMap = tokenToEndpointMap;
         this.topology = topology;
         endpointToHostIdMap = HashBiMap.create();
@@ -881,15 +877,22 @@ public class TokenMetadata
         return topology;
     }
 
-    public class Topology
+    /**
+     * Tracks the assignment of racks and endpoints in each datacenter for all the "normal" endpoints
+     * in this TokenMetadata. This allows faster calculation of endpoints in NetworkTopologyStrategy.
+     */
+    public static class Topology
     {
+        /** multi-map of DC to endpoints in that DC */
         private final Multimap<String, InetAddress> dcEndpoints;
+        /** map of DC to multi-map of rack to endpoints in that rack */
         private final Map<String, Multimap<String, InetAddress>> dcRacks;
+        /** reverse-lookup map for endpoint to current known dc/rack assignment */
         private final Map<InetAddress, Pair<String, String>> currentLocations;
 
         protected Topology()
         {
-            dcEndpoints = HashMultimap.<String, InetAddress>create();
+            dcEndpoints = HashMultimap.create();
             dcRacks = new HashMap<String, Multimap<String, InetAddress>>();
             currentLocations = new HashMap<InetAddress, Pair<String, String>>();
         }
@@ -901,18 +904,24 @@ public class TokenMetadata
             currentLocations.clear();
         }
 
+        /**
+         * construct deep-copy of other
+         */
         protected Topology(Topology other)
         {
             synchronized (other)
             {
-                dcEndpoints = HashMultimap.<String, InetAddress>create(other.dcEndpoints);
+                dcEndpoints = HashMultimap.create(other.dcEndpoints);
                 dcRacks = new HashMap<String, Multimap<String, InetAddress>>();
                 for (String dc : other.dcRacks.keySet())
-                    dcRacks.put(dc, HashMultimap.<String, InetAddress>create(other.dcRacks.get(dc)));
+                    dcRacks.put(dc, HashMultimap.create(other.dcRacks.get(dc)));
                 currentLocations = new HashMap<InetAddress, Pair<String, String>>(other.currentLocations);
             }
         }
 
+        /**
+         * Stores current DC/rack assignment for ep
+         */
         protected synchronized void addEndpoint(InetAddress ep)
         {
             IEndpointSnitch snitch = DatabaseDescriptor.getEndpointSnitch();
@@ -936,6 +945,9 @@ public class TokenMetadata
             currentLocations.put(ep, new Pair<String, String>(dc, rack));
         }
 
+        /**
+         * Removes current DC/rack assignment for ep
+         */
         protected synchronized void removeEndpoint(InetAddress ep)
         {
             if (!currentLocations.containsKey(ep))
@@ -945,11 +957,17 @@ public class TokenMetadata
             dcRacks.get(current.left).remove(current.right, ep);
         }
 
+        /**
+         * @return multi-map of DC to endpoints in that DC
+         */
         public Multimap<String, InetAddress> getDatacenterEndpoints()
         {
             return dcEndpoints;
         }
 
+        /**
+         * @return map of DC to multi-map of rack to endpoints in that rack
+         */
         public Map<String, Multimap<String, InetAddress>> getDatacenterRacks()
         {
             return dcRacks;
