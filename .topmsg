@@ -1,8 +1,7 @@
 From: Eric Evans <eevans@apache.org>
-Subject: [PATCH] p/4120/04_remove_node_by_hostid
+Subject: [PATCH] p/4121/01_support_multiple_tokens_per_host
 
-Refactors StorageService.removeToken() (now removeNode()) to reference
-nodes by host ID, not token.  See CASSANDRA-4120
+Support associating more than one token per node.  See CASSANDRA-4121
 (https://issues.apache.org/jira/browse/CASSANDRA-4120).
 
 Signed-off-by: Eric Evans <eevans@apache.org>
