@@ -841,6 +841,14 @@ public class TokenMetadata
         }
     }
 
+    /**
+     * The Topology tracks associations between datacenters, racks and endpoints<br>
+     * <br>
+     * <b>NB: you must synchronize on the Topology object when accessing its members
+     * {@link Topology#getDatacenterEndpoints} and {@link Topology#getDatacenterRacks}
+     * to prevent concurrent modification</b>
+     * @return
+     */
     public Topology getTopology()
     {
         return topology;
@@ -927,6 +935,9 @@ public class TokenMetadata
         }
 
         /**
+         * <b>NB: you must synchronize on the Topology object when accessing
+         * {@link Topology#getDatacenterEndpoints} and {@link Topology#getDatacenterRacks}
+         * to prevent concurrent modification</b>
          * @return multi-map of DC to endpoints in that DC
          */
         public Multimap<String, InetAddress> getDatacenterEndpoints()
@@ -935,6 +946,9 @@ public class TokenMetadata
         }
 
         /**
+         * <b>NB: you must synchronize on the Topology object when accessing
+         * {@link Topology#getDatacenterEndpoints} and {@link Topology#getDatacenterRacks}
+         * to prevent concurrent modification</b>
          * @return map of DC to multi-map of rack to endpoints in that rack
          */
         public Map<String, Multimap<String, InetAddress>> getDatacenterRacks()
