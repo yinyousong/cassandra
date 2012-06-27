@@ -13,20 +13,22 @@
  * (CLI) track elapsed time for `delete' operation (CASSANDRA-4060)
  * (CLI) jline version is bumped to 1.0 to properly  support
    'delete' key function (CASSANDRA-4132)
- * Save IndexSummary into new SSTable 'Summary' component (CASSANDRA-2392)
+ * Save IndexSummary into new SSTable 'Summary' component (CASSANDRA-2392, 4289)
  * Add support for range tombstones (CASSANDRA-3708)
  * Improve MessagingService efficiency (CASSANDRA-3617)
  * Avoid ID conflicts from concurrent schema changes (CASSANDRA-3794)
  * Set thrift HSHA server thread limit to unlimited by default (CASSANDRA-4277)
  * Avoids double serialization of CF id in RowMutation messages
    (CASSANDRA-4293)
- * fix Summary component and caches to use correct partitioner (CASSANDRA-4289)
  * stream compressed sstables directly with java nio (CASSANDRA-4297)
  * Support multiple ranges in SliceQueryFilter (CASSANDRA-3885)
  * Add column metadata to system column families (CASSANDRA-4018)
 
 
 1.1.2
+ * Fix cleanup not deleting index entries (CASSANDRA-4379)
+ * Use correct partitioner when saving + loading caches (CASSANDRA-4331)
+ * Check schema before trying to export sstable (CASSANDRA-2760)
  * Raise a meaningful exception instead of NPE when PFS encounters
    an unconfigured node + no default (CASSANDRA-4349)
  * fix bug in sstable blacklisting with LCS (CASSANDRA-4343)
@@ -35,8 +37,8 @@
  * fix NPE in compactionstats (CASSANDRA-4318)
  * enforce 1m min keycache for auto (CASSANDRA-4306)
  * Have DeletedColumn.isMFD always return true (CASSANDRA-4307)
- * ex msg for cql3 order by constraints says primary filter can be an IN clause 
-   which is misleading (CASSANDRA-4319)
+ * (cql3) exeption message for ORDER BY constraints said primary filter can be
+    an IN clause, which is misleading (CASSANDRA-4319)
  * (cql3) Reject (not yet supported) creation of 2ndardy indexes on tables with
    composite primary keys (CASSANDRA-4328)
  * Set JVM stack size to 160k for java 7 (CASSANDRA-4275)
@@ -45,6 +47,7 @@
  * Use CF comparator to sort indexed columns in SecondaryIndexManager
    (CASSANDRA-4365)
  * add strategy_options to the KSMetaData.toString() output (CASSANDRA-4248)
+ * (cql3) fix range queries containing unqueried results (CASSANDRA-4372)
 Merged from 1.0:
  * Set gc_grace on index CF to 0 (CASSANDRA-4314)
 
