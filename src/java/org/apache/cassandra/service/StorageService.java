@@ -3009,29 +3009,37 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
 
             final String table = entry.getKey();
 
-            final Set<Map.Entry<Range<Token>, InetAddress>> pending = new HashSet<Map.Entry<Range<Token>, InetAddress>>(rangesWithEndpoints.entries());
+            Map<InetAddress, List<Range<Token>>> rangesPerEndpoint = new HashMap<InetAddress, List<Range<Token>>>();
 
             for (final Map.Entry<Range<Token>, InetAddress> endPointEntry : rangesWithEndpoints.entries())
             {
                 final Range<Token> range = endPointEntry.getKey();
-                final InetAddress newEndpoint = endPointEntry.getValue();
+                final InetAddress endpoint = endPointEntry.getValue();
+
+                List<Range<Token>> curRanges = rangesPerEndpoint.get(endpoint);
+                if (curRanges == null)
+                {
+                    curRanges = new LinkedList<Range<Token>>();
+                    rangesPerEndpoint.put(endpoint, curRanges);
+                }
+                curRanges.add(range);
+            }
+
+            for (final Map.Entry<InetAddress, List<Range<Token>>> rangesEntry : rangesPerEndpoint.entrySet())
+            {
+                final List<Range<Token>> ranges = rangesEntry.getValue();
+                final InetAddress newEndpoint = rangesEntry.getKey();
 
                 final IStreamCallback callback = new IStreamCallback()
                 {
                     public void onSuccess()
                     {
-                        synchronized (pending)
-                        {
-                            pending.remove(endPointEntry);
-
-                            if (pending.isEmpty())
-                                latch.countDown();
-                        }
+                        latch.countDown();
                     }
 
                     public void onFailure()
                     {
-                        logger.warn("Streaming to " + endPointEntry + " failed");
+                        logger.warn("Streaming to " + newEndpoint + " failed");
                         onSuccess(); // calling onSuccess for latch countdown
                     }
                 };
@@ -3041,7 +3049,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
                     public void run()
                     {
                         // TODO each call to transferRanges re-flushes, this is potentially a lot of waste
-                        StreamOut.transferRanges(newEndpoint, Table.open(table), Arrays.asList(range), callback, OperationType.UNBOOTSTRAP);
+                        StreamOut.transferRanges(newEndpoint, Table.open(table), ranges, callback, OperationType.UNBOOTSTRAP);
                     }
                 });
             }
