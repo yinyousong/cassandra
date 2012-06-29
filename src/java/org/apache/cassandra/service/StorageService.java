@@ -65,6 +65,7 @@ import org.apache.cassandra.utils.BiMultiValMap;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.NodeId;
 import org.apache.cassandra.utils.Pair;
+import org.apache.cassandra.utils.OutputHandler;
 import org.apache.cassandra.utils.WrappedRunnable;
 
 /**
@@ -3165,13 +3166,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
             }
         };
 
-        SSTableLoader.OutputHandler oh = new SSTableLoader.OutputHandler()
-        {
-            public void output(String msg) { logger.info(msg); }
-            public void debug(String msg) { logger.debug(msg); }
-        };
-
-        SSTableLoader loader = new SSTableLoader(dir, client, oh);
+        SSTableLoader loader = new SSTableLoader(dir, client, new OutputHandler.LogOutput());
         try
         {
             loader.stream().get();
