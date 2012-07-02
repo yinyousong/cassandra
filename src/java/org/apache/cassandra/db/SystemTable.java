@@ -316,7 +316,7 @@ public class SystemTable
         String req = "SELECT token_bytes FROM system.%s WHERE key='%s'";
         UntypedResultSet result = processInternal(String.format(req, LOCAL_CF, LOCAL_KEY));
         return result.isEmpty() || !result.one().has("token_bytes")
-             ? null
+             ? Collections.<Token>emptyList()
              : deserializeTokens(result.one().getBytes("token_bytes"));
     }
 
