@@ -645,12 +645,6 @@ public class DatabaseDescriptor
         return conf.column_index_size_in_kb * 1024;
     }
 
-    @Deprecated
-    public static String getInitialToken()
-    {
-        return System.getProperty("cassandra.initial_token", conf.initial_token);
-    }
-
     public static Collection<String> getInitialTokens()
     {
         return tokensFromString(System.getProperty("cassandra.initial_token", conf.initial_token));
@@ -668,12 +662,6 @@ public class DatabaseDescriptor
     public static Integer getNumTokens()
     {
         return conf.num_tokens;
-    }
-
-    @Deprecated
-    public static String getReplaceToken()
-    {
-        return System.getProperty("cassandra.replace_token", null);
     }
 
     public static Collection<String> getReplaceTokens()
