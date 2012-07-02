@@ -145,14 +145,8 @@ public class SystemTable
     }
 
     /**
-     * Record token being used by another node
+     * Record tokens being used by another node
      */
-    @Deprecated
-    public static synchronized void updateToken(InetAddress ep, Token token)
-    {
-        updateTokens(ep, Arrays.asList(token));
-    }
-
     public static synchronized void updateTokens(InetAddress ep, Collection<Token> tokens)
     {
         if (ep.equals(FBUtilities.getBroadcastAddress()))
@@ -184,14 +178,8 @@ public class SystemTable
     }
 
     /**
-     * Remove stored token being used by another node
+     * Remove stored tokens being used by another node
      */
-    @Deprecated
-    public static synchronized void removeToken(Token token)
-    {
-        removeTokens(Arrays.asList(token));
-    }
-
     public static synchronized void removeTokens(Collection<Token> tokens)
     {
         IPartitioner p = StorageService.getPartitioner();
@@ -212,15 +200,6 @@ public class SystemTable
         }
 
         forceBlockingFlush(PEERS_CF);
-    }
-
-    /**
-     * This method is used to update the System Table with the new token for this node
-    */
-    @Deprecated
-    public static synchronized void updateToken(Token token)
-    {
-        updateTokens(Arrays.asList(token));
     }
 
     /**
@@ -372,12 +351,6 @@ public class SystemTable
         String savedClusterName = ByteBufferUtil.string(clusterCol.value());
         if (!DatabaseDescriptor.getClusterName().equals(savedClusterName))
             throw new ConfigurationException("Saved cluster name " + savedClusterName + " != configured name " + DatabaseDescriptor.getClusterName());
-    }
-
-    @Deprecated
-    public static Token getSavedToken()
-    {
-        return getSavedTokens().iterator().next();
     }
 
     public static Collection<Token> getSavedTokens()

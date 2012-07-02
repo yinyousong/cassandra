@@ -177,13 +177,6 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
     }
 
     /** This method updates the local token on disk  */
-    @Deprecated
-    public void setToken(Token token)
-    {
-        setTokens(Arrays.asList(token));
-    }
-
-    /** This method updates the local token on disk  */
     public void setTokens(Collection<Token> tokens)
     {
         if (logger.isDebugEnabled())
@@ -395,7 +388,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
                 if (entry.getValue() == FBUtilities.getLocalAddress())
                 {
                     // entry has been mistakenly added, delete it
-                    SystemTable.removeToken(entry.getKey());
+                    SystemTable.removeTokens(Collections.<Token>singletonList(entry.getKey()));
                 }
                 else
                 {
@@ -1723,12 +1716,6 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         HintedHandOffManager.instance.scheduleHintDelivery(host);
     }
 
-    @Deprecated
-    public Token getLocalToken()
-    {
-        return getLocalTokens().iterator().next();
-    }
-
     public Collection<Token> getLocalTokens()
     {
         Collection<Token> tokens = SystemTable.getSavedTokens();
@@ -1741,7 +1728,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
     @Deprecated
     public String getToken()
     {
-        return getLocalToken().toString();
+        return getLocalTokens().iterator().next().toString();
     }
 
     public List<String> getTokens()
@@ -2491,7 +2478,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         }
 
         Gossiper.instance.addLocalApplicationState(ApplicationState.STATUS, valueFactory.moving(newToken));
-        setMode(Mode.MOVING, String.format("Moving %s from %s to %s.", localAddress, getLocalToken(), newToken), true);
+        setMode(Mode.MOVING, String.format("Moving %s from %s to %s.", localAddress, getLocalTokens().iterator().next(), newToken), true);
 
         IEndpointSnitch snitch = DatabaseDescriptor.getEndpointSnitch();
 
@@ -2592,10 +2579,10 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
             }
         }
 
-        setToken(newToken); // setting new token as we have everything settled
+        setTokens(Collections.singleton(newToken)); // setting new token as we have everything settled
 
         if (logger.isDebugEnabled())
-            logger.debug("Successfully moved to new token {}", getLocalToken());
+            logger.debug("Successfully moved to new token {}", getLocalTokens().iterator().next());
     }
 
     /**
