@@ -890,7 +890,8 @@ public class TokenMetadata
     }
 
     /**
-     * @return the Topology map of nodes to DCs + Racks.
+     * @return the Topology map of nodes to DCs + Racks
+     *
      * This is only allowed when a copy has been made of TokenMetadata, to avoid concurrent modifications
      * when Topology methods are subsequently used by the caller.
      */

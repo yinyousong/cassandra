@@ -29,7 +29,10 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Pattern;
 import javax.management.*;
 
-import com.google.common.collect.*;
+import com.google.common.collect.AbstractIterator;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Iterables;
+import com.google.common.collect.Sets;
 import com.google.common.util.concurrent.Futures;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -47,8 +50,8 @@ import org.apache.cassandra.db.commitlog.ReplayPosition;
 import org.apache.cassandra.db.compaction.AbstractCompactionStrategy;
 import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.db.compaction.LeveledCompactionStrategy;
-import org.apache.cassandra.db.filter.ExtendedFilter;
 import org.apache.cassandra.db.compaction.OperationType;
+import org.apache.cassandra.db.filter.ExtendedFilter;
 import org.apache.cassandra.db.filter.IFilter;
 import org.apache.cassandra.db.filter.QueryFilter;
 import org.apache.cassandra.db.filter.QueryPath;
@@ -881,9 +884,10 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
     /**
      * Calculate expected file size of SSTable after compaction.
      *
-     * If operation type is {@code CLEANUP}, then we calculate expected file size
-     * with checking token range to be eliminated.
-     * Other than that, we just add up all the files' size, which is the worst case file
+     * If operation type is {@code CLEANUP} and we're not dealing with an index sstable,
+     * then we calculate expected file size with checking token range to be eliminated.
+     *
+     * Otherwise, we just add up all the files' size, which is the worst case file
      * size for compaction of all the list of files given.
      *
      * @param sstables SSTables to calculate expected compacted file size
@@ -892,21 +896,18 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
      */
     public long getExpectedCompactedFileSize(Iterable<SSTableReader> sstables, OperationType operation)
     {
-        long expectedFileSize = 0;
-        if (operation == OperationType.CLEANUP)
+        if (operation != OperationType.CLEANUP || isIndex())
         {
-            Collection<Range<Token>> ranges = StorageService.instance.getLocalRanges(table.name);
-            for (SSTableReader sstable : sstables)
-            {
-                List<Pair<Long, Long>> positions = sstable.getPositionsForRanges(ranges);
-                for (Pair<Long, Long> position : positions)
-                    expectedFileSize += position.right - position.left;
-            }
+            return SSTable.getTotalBytes(sstables);
         }
-        else
+
+        long expectedFileSize = 0;
+        Collection<Range<Token>> ranges = StorageService.instance.getLocalRanges(table.name);
+        for (SSTableReader sstable : sstables)
         {
-            for (SSTableReader sstable : sstables)
-                expectedFileSize += sstable.onDiskLength();
+            List<Pair<Long, Long>> positions = sstable.getPositionsForRanges(ranges);
+            for (Pair<Long, Long> position : positions)
+                expectedFileSize += position.right - position.left;
         }
         return expectedFileSize;
     }
