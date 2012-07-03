@@ -1,4 +1,5 @@
 1.2-dev
+ * update NTS calculateNaturalEndpoints to be O(N log N) (CASSANDRA-3881)
  * add UseCondCardMark XX jvm settings on jdk 1.7 (CASSANDRA-4366)
  * split up rpc timeout by operation type (CASSANDRA-2819)
  * rewrite key cache save/load to use only sequential i/o (CASSANDRA-3762)
@@ -27,6 +28,8 @@
 
 
 1.1.3
+ * avoid using global partitioner to estimate ranges in index sstables
+   (CASSANDRA-4403)
  * restore pre-CASSANDRA-3862 approach to removing expired tombstones
    from row cache during compaction (CASSANDRA-4364)
  * (stress) support for CQL prepared statements (CASSANDRA-3633)
