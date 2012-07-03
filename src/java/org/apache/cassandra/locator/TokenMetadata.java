@@ -87,7 +87,7 @@ public class TokenMetadata
 
     /* Use this lock for manipulating the token map */
     private final ReadWriteLock lock = new ReentrantReadWriteLock(true);
-    private ArrayList<Token> sortedTokens;
+    private volatile ArrayList<Token> sortedTokens;
 
     private final Topology topology;
     /* list of subscribers that are notified when the tokenToEndpointMap changed */
@@ -125,12 +125,17 @@ public class TokenMetadata
     {
         int n = 0;
         Collection<Range<Token>> sourceRanges = getPrimaryRangesFor(getTokens(source));
-        synchronized (bootstrapTokens)
+        lock.readLock().lock();
+        try
         {
             for (Token token : bootstrapTokens.keySet())
                 for (Range<Token> range : sourceRanges)
                     if (range.contains(token))
                         n++;
+        }
+        finally
+        {
+            lock.readLock().unlock();
         }
         return n;
     }
@@ -568,15 +573,7 @@ public class TokenMetadata
 
     public ArrayList<Token> sortedTokens()
     {
-        lock.readLock().lock();
-        try
-        {
-            return sortedTokens;
-        }
-        finally
-        {
-            lock.readLock().unlock();
-        }
+        return sortedTokens;
     }
 
     private Multimap<Range<Token>, InetAddress> getPendingRangesMM(String table)
@@ -632,10 +629,18 @@ public class TokenMetadata
         return (Token) ((index == (tokens.size() - 1)) ? tokens.get(0) : tokens.get(index + 1));
     }
 
-    /** caller should not modify bootstrapTokens & should lock when iterating */
+    /** @return a copy of the bootstrapping tokens map */
     public BiMultiValMap<Token, InetAddress> getBootstrapTokens()
     {
-        return bootstrapTokens;
+        lock.readLock().lock();
+        try
+        {
+            return new BiMultiValMap<Token, InetAddress>(bootstrapTokens);
+        }
+        finally
+        {
+            lock.readLock().unlock();
+        }
     }
 
     /** caller should not modify leavingEndpoints */
@@ -746,17 +751,14 @@ public class TokenMetadata
                 }
             }
 
-            synchronized (bootstrapTokens)
+            if (!bootstrapTokens.isEmpty())
             {
-                if (!bootstrapTokens.isEmpty())
+                sb.append("Bootstrapping Tokens:" );
+                sb.append(System.getProperty("line.separator"));
+                for (Map.Entry<Token, InetAddress> entry : bootstrapTokens.entrySet())
                 {
-                    sb.append("Bootstrapping Tokens:" );
+                    sb.append(entry.getValue() + ":" + entry.getKey());
                     sb.append(System.getProperty("line.separator"));
-                    for (Map.Entry<Token, InetAddress> entry : bootstrapTokens.entrySet())
-                    {
-                        sb.append(entry.getValue() + ":" + entry.getKey());
-                        sb.append(System.getProperty("line.separator"));
-                    }
                 }
             }
 
@@ -860,10 +862,7 @@ public class TokenMetadata
         {
             Map<Token, InetAddress> map = new HashMap<Token, InetAddress>(tokenToEndpointMap.size() + bootstrapTokens.size());
             map.putAll(tokenToEndpointMap);
-            synchronized (bootstrapTokens)
-            {
-                map.putAll(bootstrapTokens);
-            }
+            map.putAll(bootstrapTokens);
             return map;
         }
         finally
@@ -873,15 +872,13 @@ public class TokenMetadata
     }
 
     /**
-     * The Topology tracks associations between datacenters, racks and endpoints<br>
-     * <br>
-     * <b>NB: you must synchronize on the Topology object when accessing its members
-     * {@link Topology#getDatacenterEndpoints} and {@link Topology#getDatacenterRacks}
-     * to prevent concurrent modification</b>
-     * @return
+     * @return the Topology map of nodes to DCs + Racks.
+     * This is only allowed when a copy has been made of TokenMetadata, to avoid concurrent modifications
+     * when Topology methods are subsequently used by the caller.
      */
     public Topology getTopology()
     {
+        assert this != StorageService.instance.getTokenMetadata();
         return topology;
     }
 
@@ -905,7 +902,7 @@ public class TokenMetadata
             currentLocations = new HashMap<InetAddress, Pair<String, String>>();
         }
 
-        protected synchronized void clear()
+        protected void clear()
         {
             dcEndpoints.clear();
             dcRacks.clear();
@@ -917,20 +914,17 @@ public class TokenMetadata
          */
         protected Topology(Topology other)
         {
-            synchronized (other)
-            {
-                dcEndpoints = HashMultimap.create(other.dcEndpoints);
-                dcRacks = new HashMap<String, Multimap<String, InetAddress>>();
-                for (String dc : other.dcRacks.keySet())
-                    dcRacks.put(dc, HashMultimap.create(other.dcRacks.get(dc)));
-                currentLocations = new HashMap<InetAddress, Pair<String, String>>(other.currentLocations);
-            }
+            dcEndpoints = HashMultimap.create(other.dcEndpoints);
+            dcRacks = new HashMap<String, Multimap<String, InetAddress>>();
+            for (String dc : other.dcRacks.keySet())
+                dcRacks.put(dc, HashMultimap.create(other.dcRacks.get(dc)));
+            currentLocations = new HashMap<InetAddress, Pair<String, String>>(other.currentLocations);
         }
 
         /**
          * Stores current DC/rack assignment for ep
          */
-        protected synchronized void addEndpoint(InetAddress ep)
+        protected void addEndpoint(InetAddress ep)
         {
             IEndpointSnitch snitch = DatabaseDescriptor.getEndpointSnitch();
             String dc = snitch.getDatacenter(ep);
@@ -956,7 +950,7 @@ public class TokenMetadata
         /**
          * Removes current DC/rack assignment for ep
          */
-        protected synchronized void removeEndpoint(InetAddress ep)
+        protected void removeEndpoint(InetAddress ep)
         {
             if (!currentLocations.containsKey(ep))
                 return;
@@ -966,9 +960,6 @@ public class TokenMetadata
         }
 
         /**
-         * <b>NB: you must synchronize on the Topology object when accessing
-         * {@link Topology#getDatacenterEndpoints} and {@link Topology#getDatacenterRacks}
-         * to prevent concurrent modification</b>
          * @return multi-map of DC to endpoints in that DC
          */
         public Multimap<String, InetAddress> getDatacenterEndpoints()
@@ -977,9 +968,6 @@ public class TokenMetadata
         }
 
         /**
-         * <b>NB: you must synchronize on the Topology object when accessing
-         * {@link Topology#getDatacenterEndpoints} and {@link Topology#getDatacenterRacks}
-         * to prevent concurrent modification</b>
          * @return map of DC to multi-map of rack to endpoints in that rack
          */
         public Map<String, Multimap<String, InetAddress>> getDatacenterRacks()
