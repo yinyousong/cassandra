@@ -2073,17 +2073,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         if (futures.isEmpty())
             return;
         for (AntiEntropyService.RepairFuture future : futures)
-        {
-            try
-            {
-                future.get();
-            }
-            catch (Exception e)
-            {
-                logger.error("Repair session " + future.session.getName() + " failed.", e);
-                throw new IOException("Some repair session(s) failed (see log for details).");
-            }
-        }
+            FBUtilities.waitOnFuture(future);
     }
 
     public void forceTableRepairRange(String beginToken, String endToken, final String tableName, boolean isSequential, final String... columnFamilies) throws IOException
