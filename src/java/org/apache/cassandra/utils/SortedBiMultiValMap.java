@@ -31,7 +31,7 @@ public class SortedBiMultiValMap<K, V> extends BiMultiValMap<K, V>
 
     public static <K extends Comparable<K>, V extends Comparable<V>> SortedBiMultiValMap<K, V> create(BiMultiValMap<K, V> map)
     {
-        SortedBiMultiValMap<K, V> newMap = SortedBiMultiValMap.<K,V>create();
+        SortedBiMultiValMap<K, V> newMap = SortedBiMultiValMap.create();
         newMap.forwardMap.putAll(map);
         newMap.reverseMap.putAll(map.inverse());
         return newMap;
