@@ -49,8 +49,6 @@ public class SortedBiMultiValMap<K, V> extends BiMultiValMap<K, V>
     {
         return new Comparator<T>()
         {
-            @SuppressWarnings("unchecked")
-            @Override
             public int compare(T o1, T o2)
             {
                 return ((Comparable<T>) o1).compareTo(o2);
