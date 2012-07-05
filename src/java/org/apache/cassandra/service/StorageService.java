@@ -35,6 +35,7 @@ import com.google.common.base.Supplier;
 import com.google.common.collect.*;
 
 import org.apache.cassandra.dht.Range;
+import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.metrics.ClientRequestMetrics;
 import org.apache.log4j.Level;
 import org.apache.commons.lang.StringUtils;
@@ -384,17 +385,18 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         if (Boolean.parseBoolean(System.getProperty("cassandra.load_ring_state", "true")))
         {
             logger.info("Loading persisted ring state");
-            for (Map.Entry<Token, InetAddress> entry : SystemTable.loadTokens().entrySet())
+            Multimap<InetAddress, Token> loadedTokens = SystemTable.loadTokens();
+            for (InetAddress ep : loadedTokens.keySet())
             {
-                if (entry.getValue() == FBUtilities.getLocalAddress())
+                if (ep.equals(FBUtilities.getBroadcastAddress()))
                 {
                     // entry has been mistakenly added, delete it
-                    SystemTable.removeTokens(Collections.<Token>singletonList(entry.getKey()));
+                    SystemTable.removeTokens(loadedTokens.get(ep));
                 }
                 else
                 {
-                    tokenMetadata.updateNormalToken(entry.getKey(), entry.getValue());
-                    Gossiper.instance.addSavedEndpoint(entry.getValue());
+                    tokenMetadata.updateNormalTokens(loadedTokens.get(ep), ep);
+                    Gossiper.instance.addSavedEndpoint(ep);
                 }
             }
         }
