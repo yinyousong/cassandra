@@ -4,7 +4,6 @@ import java.util.Comparator;
 import java.util.SortedMap;
 import java.util.TreeMap;
 
-import com.google.common.collect.Multimaps;
 import com.google.common.collect.SortedSetMultimap;
 import com.google.common.collect.TreeMultimap;
 
@@ -17,7 +16,7 @@ public class SortedBiMultiValMap<K, V> extends BiMultiValMap<K, V>
 
     public static <K extends Comparable<K>, V extends Comparable<V>> SortedBiMultiValMap<K, V> create()
     {
-        return new SortedBiMultiValMap<K, V>(new TreeMap<K,V>(), Multimaps.synchronizedSortedSetMultimap(TreeMultimap.<V, K>create()));
+        return new SortedBiMultiValMap<K, V>(new TreeMap<K,V>(), TreeMultimap.<V, K>create());
     }
 
     public static <K, V> SortedBiMultiValMap<K, V> create(Comparator<K> keyComparator, Comparator<V> valueComparator)
@@ -26,12 +25,12 @@ public class SortedBiMultiValMap<K, V> extends BiMultiValMap<K, V>
             keyComparator = defaultComparator();
         if (valueComparator == null)
             valueComparator = defaultComparator();
-        return new SortedBiMultiValMap<K, V>(new TreeMap<K,V>(keyComparator), Multimaps.synchronizedSortedSetMultimap(TreeMultimap.<V, K>create(valueComparator, keyComparator)));
+        return new SortedBiMultiValMap<K, V>(new TreeMap<K,V>(keyComparator), TreeMultimap.<V, K>create(valueComparator, keyComparator));
     }
 
     public static <K extends Comparable<K>, V extends Comparable<V>> SortedBiMultiValMap<K, V> create(BiMultiValMap<K, V> map)
     {
-        SortedBiMultiValMap<K, V> newMap = SortedBiMultiValMap.create();
+        SortedBiMultiValMap<K, V> newMap = SortedBiMultiValMap.<K,V>create();
         newMap.forwardMap.putAll(map);
         newMap.reverseMap.putAll(map.inverse());
         return newMap;
@@ -49,6 +48,7 @@ public class SortedBiMultiValMap<K, V> extends BiMultiValMap<K, V>
     {
         return new Comparator<T>()
         {
+            @SuppressWarnings("unchecked")
             public int compare(T o1, T o2)
             {
                 return ((Comparable<T>) o1).compareTo(o2);
