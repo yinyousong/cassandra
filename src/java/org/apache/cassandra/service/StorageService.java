@@ -1330,18 +1330,16 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         if (tokenMetadata.isMember(endpoint))
         {
             String state = pieces[0];
-            Token removeToken = tokenMetadata.getToken(endpoint);
+            Collection<Token> removeTokens = tokenMetadata.getTokens(endpoint);
 
             if (VersionedValue.REMOVED_TOKEN.equals(state))
             {
-                excise(Collections.singleton(removeToken),
-                       endpoint,
-                       extractExpireTime(pieces, MessagingService.instance().getVersion(endpoint)));
+                excise(removeTokens, endpoint, extractExpireTime(pieces, MessagingService.instance().getVersion(endpoint)));
             }
             else if (VersionedValue.REMOVING_TOKEN.equals(state))
             {
                 if (logger.isDebugEnabled())
-                    logger.debug("Token " + removeToken + " removed manually (endpoint was " + endpoint + ")");
+                    logger.debug("Tokens " + removeTokens + " removed manually (endpoint was " + endpoint + ")");
 
                 // Note that the endpoint is being removed
                 tokenMetadata.addLeavingEndpoint(endpoint);
@@ -2605,8 +2603,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
             {
                 UUID hostId = tokenMetadata.getHostId(endpoint);
                 Gossiper.instance.advertiseTokenRemoved(endpoint, hostId);
-                Token token = tokenMetadata.getToken(endpoint);
-                excise(Collections.singleton(token), endpoint);
+                excise(tokenMetadata.getTokens(endpoint), endpoint);
             }
             replicatingNodes.clear();
             removingNode = null;
@@ -2636,7 +2633,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         if (endpoint == null)
             throw new UnsupportedOperationException("Host ID not found.");
 
-        Token token = tokenMetadata.getToken(endpoint);
+        Collection<Token> tokens = tokenMetadata.getTokens(endpoint);
 
         if (endpoint.equals(myAddress))
              throw new UnsupportedOperationException("Cannot remove self");
@@ -2694,7 +2691,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
             }
         }
 
-        excise(Collections.singleton(token), endpoint);
+        excise(tokens, endpoint);
 
         // gossiper will indicate the token has left
         Gossiper.instance.advertiseTokenRemoved(endpoint, hostId);
