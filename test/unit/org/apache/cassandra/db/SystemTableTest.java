@@ -61,9 +61,9 @@ public class SystemTableTest
         BytesToken token = new BytesToken(ByteBufferUtil.bytes("token3"));
         InetAddress address = InetAddress.getByName("127.0.0.2");
         SystemTable.updateTokens(address, Collections.<Token>singletonList(token));
-        assert SystemTable.loadTokens().get(token).equals(address);
+        assert SystemTable.loadTokens().get(address).contains(token);
         SystemTable.removeTokens(Collections.<Token>singletonList(token));
-        assert !SystemTable.loadTokens().containsKey(token);
+        assert !SystemTable.loadTokens().containsValue(token);
     }
 
     @Test
