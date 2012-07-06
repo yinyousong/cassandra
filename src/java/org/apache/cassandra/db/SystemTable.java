@@ -24,8 +24,11 @@ import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.ExecutionException;
 
+import com.google.common.collect.HashMultimap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedSet;
+import com.google.common.collect.Multimap;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -257,13 +260,13 @@ public class SystemTable
      * Return a map of stored tokens to IP addresses
      *
      */
-    public static HashMap<Token, InetAddress> loadTokens()
+    public static Multimap<InetAddress, Token> loadTokens()
     {
         IPartitioner p = StorageService.getPartitioner();
 
-        HashMap<Token, InetAddress> tokenMap = new HashMap<Token, InetAddress>();
+        Multimap<InetAddress, Token> tokenMap = HashMultimap.create();
         for (UntypedResultSet.Row row : processInternal("SELECT * FROM system." + PEERS_CF))
-            tokenMap.put(p.getTokenFactory().fromByteArray(row.getBytes("token_bytes")), row.getInetAddress("peer"));
+            tokenMap.put(row.getInetAddress("peer"), p.getTokenFactory().fromByteArray(row.getBytes("token_bytes")));
 
         return tokenMap;
     }
