@@ -35,6 +35,7 @@ import com.google.common.base.Supplier;
 import com.google.common.collect.*;
 
 import org.apache.cassandra.dht.Range;
+import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.metrics.ClientRequestMetrics;
 import org.apache.log4j.Level;
 import org.apache.commons.lang.StringUtils;
@@ -410,17 +411,18 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         if (Boolean.parseBoolean(System.getProperty("cassandra.load_ring_state", "true")))
         {
             logger.info("Loading persisted ring state");
-            for (Map.Entry<Token, InetAddress> entry : SystemTable.loadTokens().entrySet())
+            Multimap<InetAddress, Token> loadedTokens = SystemTable.loadTokens();
+            for (InetAddress ep : loadedTokens.keySet())
             {
-                if (entry.getValue() == FBUtilities.getLocalAddress())
+                if (ep.equals(FBUtilities.getBroadcastAddress()))
                 {
                     // entry has been mistakenly added, delete it
-                    SystemTable.removeTokens(Collections.<Token>singletonList(entry.getKey()));
+                    SystemTable.removeTokens(loadedTokens.get(ep));
                 }
                 else
                 {
-                    tokenMetadata.updateNormalToken(entry.getKey(), entry.getValue());
-                    Gossiper.instance.addSavedEndpoint(entry.getValue());
+                    tokenMetadata.updateNormalTokens(loadedTokens.get(ep), ep);
+                    Gossiper.instance.addSavedEndpoint(ep);
                 }
             }
         }
@@ -3051,16 +3053,17 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
      */
     private CountDownLatch streamRanges(final Map<String, Multimap<Range<Token>, InetAddress>> rangesToStreamByTable)
     {
-        final CountDownLatch latch = new CountDownLatch(rangesToStreamByTable.keySet().size());
+        // First, we build a list of ranges to stream to each host, per table
+        final Map<String, Map<InetAddress, List<Range<Token>>>> sessionsToStreamByTable = new HashMap<String, Map<InetAddress, List<Range<Token>>>>();
+        // The number of stream out sessions we need to start, to be built up as we build sessionsToStreamByTable
+        int sessionCount = 0;
+
         for (Map.Entry<String, Multimap<Range<Token>, InetAddress>> entry : rangesToStreamByTable.entrySet())
         {
             Multimap<Range<Token>, InetAddress> rangesWithEndpoints = entry.getValue();
 
             if (rangesWithEndpoints.isEmpty())
-            {
-                latch.countDown();
                 continue;
-            }
 
             final String table = entry.getKey();
 
@@ -3079,6 +3082,17 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
                 }
                 curRanges.add(range);
             }
+
+            sessionCount += rangesPerEndpoint.size();
+            sessionsToStreamByTable.put(table, rangesPerEndpoint);
+        }
+
+        final CountDownLatch latch = new CountDownLatch(sessionCount);
+
+        for (Map.Entry<String, Map<InetAddress, List<Range<Token>>>> entry : sessionsToStreamByTable.entrySet())
+        {
+            final String table = entry.getKey();
+            final Map<InetAddress, List<Range<Token>>> rangesPerEndpoint = entry.getValue();
 
             for (final Map.Entry<InetAddress, List<Range<Token>>> rangesEntry : rangesPerEndpoint.entrySet())
             {
@@ -3104,7 +3118,8 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
                     public void run()
                     {
                         // TODO each call to transferRanges re-flushes, this is potentially a lot of waste
-                        StreamOut.transferRanges(newEndpoint, Table.open(table), ranges, callback, OperationType.UNBOOTSTRAP);
+                        StreamOut.transferRanges(newEndpoint, Table.open(table), ranges, callback,
+                                OperationType.UNBOOTSTRAP);
                     }
                 });
             }
