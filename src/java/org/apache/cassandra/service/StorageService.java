@@ -3027,16 +3027,17 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
      */
     private CountDownLatch streamRanges(final Map<String, Multimap<Range<Token>, InetAddress>> rangesToStreamByTable)
     {
-        final CountDownLatch latch = new CountDownLatch(rangesToStreamByTable.keySet().size());
+        // First, we build a list of ranges to stream to each host, per table
+        final Map<String, Map<InetAddress, List<Range<Token>>>> sessionsToStreamByTable = new HashMap<String, Map<InetAddress, List<Range<Token>>>>();
+        // The number of stream out sessions we need to start, to be built up as we build sessionsToStreamByTable
+        int sessionCount = 0;
+
         for (Map.Entry<String, Multimap<Range<Token>, InetAddress>> entry : rangesToStreamByTable.entrySet())
         {
             Multimap<Range<Token>, InetAddress> rangesWithEndpoints = entry.getValue();
 
             if (rangesWithEndpoints.isEmpty())
-            {
-                latch.countDown();
                 continue;
-            }
 
             final String table = entry.getKey();
 
@@ -3055,6 +3056,17 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
                 }
                 curRanges.add(range);
             }
+
+            sessionCount += rangesPerEndpoint.size();
+            sessionsToStreamByTable.put(table, rangesPerEndpoint);
+        }
+
+        final CountDownLatch latch = new CountDownLatch(sessionCount);
+
+        for (Map.Entry<String, Map<InetAddress, List<Range<Token>>>> entry : sessionsToStreamByTable.entrySet())
+        {
+            final String table = entry.getKey();
+            final Map<InetAddress, List<Range<Token>>> rangesPerEndpoint = entry.getValue();
 
             for (final Map.Entry<InetAddress, List<Range<Token>>> rangesEntry : rangesPerEndpoint.entrySet())
             {
@@ -3080,7 +3092,8 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
                     public void run()
                     {
                         // TODO each call to transferRanges re-flushes, this is potentially a lot of waste
-                        StreamOut.transferRanges(newEndpoint, Table.open(table), ranges, callback, OperationType.UNBOOTSTRAP);
+                        StreamOut.transferRanges(newEndpoint, Table.open(table), ranges, callback,
+                                OperationType.UNBOOTSTRAP);
                     }
                 });
             }
