@@ -28,8 +28,9 @@ import java.util.*;
 import java.util.Map.Entry;
 import java.util.concurrent.ExecutionException;
 
-import com.google.common.collect.ImmutableBiMap;
+import com.google.common.collect.LinkedHashMultimap;
 import com.google.common.collect.Maps;
+
 import org.apache.commons.cli.*;
 
 import org.apache.cassandra.concurrent.JMXEnabledThreadPoolExecutorMBean;
@@ -218,7 +219,11 @@ public class NodeCmd
      */
     public void printRing(PrintStream outs, String keyspace)
     {
-        Map<String, String> endpointsToTokens = ImmutableBiMap.copyOf(probe.getTokenToEndpointMap()).inverse();
+        Map<String, String> tokensToEndpoints = probe.getTokenToEndpointMap();
+        LinkedHashMultimap<String, String> endpointsToTokens = LinkedHashMultimap.create();
+        for (Map.Entry<String, String> entry : tokensToEndpoints.entrySet())
+            endpointsToTokens.put(entry.getValue(), entry.getKey());
+
         String format = "%-16s%-12s%-7s%-8s%-16s%-20s%-44s%n";
 
         // Calculate per-token ownership of the ring
@@ -256,7 +261,7 @@ public class NodeCmd
         }
     }
     
-    private void printDc(PrintStream outs, String format, String dc, Map<String, String> endpointsToTokens,
+    private void printDc(PrintStream outs, String format, String dc, LinkedHashMultimap<String, String> endpointsToTokens,
             boolean keyspaceSelected, Map<InetAddress, Float> filteredOwnerships)
     {
         Collection<String> liveNodes = probe.getLiveNodes();
@@ -270,11 +275,14 @@ public class NodeCmd
         outs.println("==========");
 
         // get the total amount of replicas for this dc and the last token in this dc's ring
+        List<String> tokens = new ArrayList<String>();
         float totalReplicas = 0f;
         String lastToken = "";
+
         for (Map.Entry<InetAddress, Float> entry : filteredOwnerships.entrySet())
         {
-            lastToken = endpointsToTokens.get(entry.getKey().getHostAddress());
+            tokens.addAll(endpointsToTokens.get(entry.getKey().getHostAddress()));
+            lastToken = tokens.get(tokens.size() - 1);
             totalReplicas += entry.getValue();
         }
         
@@ -292,37 +300,39 @@ public class NodeCmd
         for (Map.Entry<InetAddress, Float> entry : filteredOwnerships.entrySet())
         {
             String endpoint = entry.getKey().getHostAddress();
-            String token = endpointsToTokens.get(entry.getKey().getHostAddress());
-            String rack;
-            try
+            for (String token : endpointsToTokens.get(endpoint))
             {
-                rack = probe.getEndpointSnitchInfoProxy().getRack(endpoint);
+                String rack;
+                try
+                {
+                    rack = probe.getEndpointSnitchInfoProxy().getRack(endpoint);
+                }
+                catch (UnknownHostException e)
+                {
+                    rack = "Unknown";
+                }
+    
+                String status = liveNodes.contains(endpoint)
+                        ? "Up"
+                        : deadNodes.contains(endpoint)
+                                ? "Down"
+                                : "?";
+    
+                String state = "Normal";
+    
+                if (joiningNodes.contains(endpoint))
+                    state = "Joining";
+                else if (leavingNodes.contains(endpoint))
+                    state = "Leaving";
+                else if (movingNodes.contains(endpoint))
+                    state = "Moving";
+    
+                String load = loadMap.containsKey(endpoint)
+                        ? loadMap.get(endpoint)
+                        : "?";
+                String owns = new DecimalFormat("##0.00%").format(entry.getValue());
+                outs.printf(format, entry.getKey(), rack, status, state, load, owns, token);
             }
-            catch (UnknownHostException e)
-            {
-                rack = "Unknown";
-            }
-
-            String status = liveNodes.contains(endpoint)
-                    ? "Up"
-                    : deadNodes.contains(endpoint)
-                            ? "Down"
-                            : "?";
-
-            String state = "Normal";
-
-            if (joiningNodes.contains(endpoint))
-                state = "Joining";
-            else if (leavingNodes.contains(endpoint))
-                state = "Leaving";
-            else if (movingNodes.contains(endpoint))
-                state = "Moving";
-
-            String load = loadMap.containsKey(endpoint)
-                    ? loadMap.get(endpoint)
-                    : "?";
-            String owns = new DecimalFormat("##0.00%").format(entry.getValue());
-            outs.printf(format, entry.getKey(), rack, status, state, load, owns, token);
         }
         outs.println();
     }
