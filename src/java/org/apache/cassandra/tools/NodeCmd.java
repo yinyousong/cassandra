@@ -28,8 +28,9 @@ import java.util.*;
 import java.util.Map.Entry;
 import java.util.concurrent.ExecutionException;
 
-import org.apache.cassandra.service.CacheServiceMBean;
-import org.apache.cassandra.service.StorageProxyMBean;
+import com.google.common.collect.LinkedHashMultimap;
+import com.google.common.collect.Maps;
+
 import org.apache.commons.cli.*;
 
 import org.apache.cassandra.concurrent.JMXEnabledThreadPoolExecutorMBean;
@@ -38,6 +39,8 @@ import org.apache.cassandra.db.ColumnFamilyStoreMBean;
 import org.apache.cassandra.db.compaction.CompactionManagerMBean;
 import org.apache.cassandra.db.compaction.OperationType;
 import org.apache.cassandra.net.MessagingServiceMBean;
+import org.apache.cassandra.service.CacheServiceMBean;
+import org.apache.cassandra.service.StorageProxyMBean;
 import org.apache.cassandra.thrift.InvalidRequestException;
 import org.apache.cassandra.utils.EstimatedHistogram;
 import org.apache.cassandra.utils.Pair;
@@ -210,50 +213,128 @@ public class NodeCmd
 
     /**
      * Write a textual representation of the Cassandra ring.
-     *
-     * @param outs the stream to write to
+     * 
+     * @param outs
+     *            the stream to write to
      */
-    public void printRing(PrintStream outs)
+    public void printRing(PrintStream outs, String keyspace)
     {
-        Map<String, String> tokenToEndpoint = probe.getTokenToEndpointMap();
-        List<String> sortedTokens = new ArrayList<String>(tokenToEndpoint.keySet());
+        Map<String, String> tokensToEndpoints = probe.getTokenToEndpointMap();
+        LinkedHashMultimap<String, String> endpointsToTokens = LinkedHashMultimap.create();
+        for (Map.Entry<String, String> entry : tokensToEndpoints.entrySet())
+            endpointsToTokens.put(entry.getValue(), entry.getKey());
 
-        String format = "%-16s%-12s%-12s%-8s%-44s%n";
-        outs.printf(format, "Address", "DC", "Rack", "Owns", "Token");
+        String format = "%-16s%-12s%-7s%-8s%-16s%-20s%-44s%n";
 
         // Calculate per-token ownership of the ring
-        Map<String, Float> ownerships= probe.getOwnership();
-
-        // show pre-wrap token twice so you can always read a node's range as
-        // (previous line token, current line token]
-        if (sortedTokens.size() > 1)
-            outs.printf(format, "", "", "", "", sortedTokens.get(sortedTokens.size() - 1));
-
-        for (String token : sortedTokens)
+        Map<InetAddress, Float> ownerships;
+        boolean keyspaceSelected;
+        try
         {
-            String primaryEndpoint = tokenToEndpoint.get(token);
-            String dataCenter;
-            try
-            {
-                dataCenter = probe.getEndpointSnitchInfoProxy().getDatacenter(primaryEndpoint);
-            }
-            catch (UnknownHostException e)
-            {
-                dataCenter = "Unknown";
-            }
-            String rack;
-            try
-            {
-                rack = probe.getEndpointSnitchInfoProxy().getRack(primaryEndpoint);
-            }
-            catch (UnknownHostException e)
-            {
-                rack = "Unknown";
-            }
-
-            String owns = new DecimalFormat("##0.00%").format(ownerships.get(token) == null ? 0.0F : ownerships.get(token));
-            outs.printf(format, primaryEndpoint, dataCenter, rack, owns, token);
+            ownerships = probe.effectiveOwnership(keyspace);
+            keyspaceSelected = true;
         }
+        catch (ConfigurationException ex)
+        {
+            ownerships = probe.getOwnership();
+            outs.printf("Note: Ownership information does not include topology; for complete information, specify a keyspace%n");
+            keyspaceSelected = false;
+        }
+        try
+        {
+            outs.println();
+            Map<String, Map<InetAddress, Float>> perDcOwnerships = Maps.newLinkedHashMap();
+            // get the different datasets and map to tokens
+            for (Map.Entry<InetAddress, Float> ownership : ownerships.entrySet())
+            {
+                String dc = probe.getEndpointSnitchInfoProxy().getDatacenter(ownership.getKey().getHostAddress());
+                if (!perDcOwnerships.containsKey(dc))
+                    perDcOwnerships.put(dc, new LinkedHashMap<InetAddress, Float>());
+                perDcOwnerships.get(dc).put(ownership.getKey(), ownership.getValue());
+            }
+            for (Map.Entry<String, Map<InetAddress, Float>> entry : perDcOwnerships.entrySet())
+                printDc(outs, format, entry.getKey(), endpointsToTokens, keyspaceSelected, entry.getValue());
+        }
+        catch (UnknownHostException e)
+        {
+            throw new RuntimeException(e);
+        }
+    }
+    
+    private void printDc(PrintStream outs, String format, String dc, LinkedHashMultimap<String, String> endpointsToTokens,
+            boolean keyspaceSelected, Map<InetAddress, Float> filteredOwnerships)
+    {
+        Collection<String> liveNodes = probe.getLiveNodes();
+        Collection<String> deadNodes = probe.getUnreachableNodes();
+        Collection<String> joiningNodes = probe.getJoiningNodes();
+        Collection<String> leavingNodes = probe.getLeavingNodes();
+        Collection<String> movingNodes = probe.getMovingNodes();
+        Map<String, String> loadMap = probe.getLoadMap();
+
+        outs.println("Datacenter: " + dc);
+        outs.println("==========");
+
+        // get the total amount of replicas for this dc and the last token in this dc's ring
+        List<String> tokens = new ArrayList<String>();
+        float totalReplicas = 0f;
+        String lastToken = "";
+
+        for (Map.Entry<InetAddress, Float> entry : filteredOwnerships.entrySet())
+        {
+            tokens.addAll(endpointsToTokens.get(entry.getKey().getHostAddress()));
+            lastToken = tokens.get(tokens.size() - 1);
+            totalReplicas += entry.getValue();
+        }
+        
+
+        if (keyspaceSelected)
+            outs.print("Replicas: " + (int) totalReplicas + "\n\n");
+
+        outs.printf(format, "Address", "Rack", "Status", "State", "Load", "Owns", "Token");
+
+        if (filteredOwnerships.size() > 1)
+            outs.printf(format, "", "", "", "", "", "", lastToken);
+        else
+            outs.println();
+
+        for (Map.Entry<InetAddress, Float> entry : filteredOwnerships.entrySet())
+        {
+            String endpoint = entry.getKey().getHostAddress();
+            for (String token : endpointsToTokens.get(endpoint))
+            {
+                String rack;
+                try
+                {
+                    rack = probe.getEndpointSnitchInfoProxy().getRack(endpoint);
+                }
+                catch (UnknownHostException e)
+                {
+                    rack = "Unknown";
+                }
+    
+                String status = liveNodes.contains(endpoint)
+                        ? "Up"
+                        : deadNodes.contains(endpoint)
+                                ? "Down"
+                                : "?";
+    
+                String state = "Normal";
+    
+                if (joiningNodes.contains(endpoint))
+                    state = "Joining";
+                else if (leavingNodes.contains(endpoint))
+                    state = "Leaving";
+                else if (movingNodes.contains(endpoint))
+                    state = "Moving";
+    
+                String load = loadMap.containsKey(endpoint)
+                        ? loadMap.get(endpoint)
+                        : "?";
+                String owns = new DecimalFormat("##0.00%").format(entry.getValue());
+                outs.printf(format, entry.getKey(), rack, status, state, load, owns, token);
+            }
+        }
+        outs.println();
     }
 
     /** Writes a table of cluster-wide node information to a PrintStream */
@@ -267,7 +348,7 @@ public class NodeCmd
         String fmt;
 
         // Calculate per-token ownership of the ring
-        Map<String, Float> ownerships;
+        Map<InetAddress, Float> ownerships;
         try
         {
             ownerships = probe.effectiveOwnership(keyspace);
@@ -774,7 +855,7 @@ public class NodeCmd
 
             switch (command)
             {
-                case RING            : nodeCmd.printRing(System.out); break;
+                case RING            : nodeCmd.printRing(System.out, arguments[0]); break;
                 case INFO            : nodeCmd.printInfo(System.out, cmd); break;
                 case CFSTATS         : nodeCmd.printColumnFamilyStats(System.out); break;
                 case TPSTATS         : nodeCmd.printThreadPoolStats(System.out); break;
