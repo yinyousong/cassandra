@@ -2843,6 +2843,8 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         if (keyspace == null && !hasSameReplication(Schema.instance.getNonSystemTables()))
             throw new ConfigurationException("Non System keyspaces doesnt have the same topology");
 
+        TokenMetadata metadata = tokenMetadata.cloneOnlyTokenMap();
+        
         if (keyspace == null)
             keyspace = Schema.instance.getNonSystemTables().get(0);
 
