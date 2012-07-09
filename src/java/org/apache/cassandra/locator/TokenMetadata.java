@@ -186,10 +186,9 @@ public class TokenMetadata
                 {
                     bootstrapTokens.removeValue(endpoint);
                     tokenToEndpointMap.removeValue(endpoint);
-					topology.addEndpoint(endpoint);
+                    topology.addEndpoint(endpoint);
                     leavingEndpoints.remove(endpoint);
                     removeFromMoving(endpoint); // also removing this endpoint from moving
-					topology.addEndpoint(endpoint);
                 }
 
                 InetAddress prev = tokenToEndpointMap.put(token, endpoint);
