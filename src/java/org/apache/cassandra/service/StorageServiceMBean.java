@@ -72,14 +72,6 @@ public interface StorageServiceMBean
     public List<String> getMovingNodes();
 
     /**
-     * Fetch a string representation of the token.
-     *
-     * @return a string token
-     */
-    @Deprecated
-    public String getToken();
-
-    /**
      * Fetch string representations of the tokens for this node.
      *
      * @return a collection of tokens formatted as strings
