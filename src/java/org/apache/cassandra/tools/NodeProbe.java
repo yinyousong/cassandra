@@ -308,12 +308,6 @@ public class NodeProbe
       return compactionProxy;
     }
 
-    @Deprecated
-    public String getToken()
-    {
-        return ssProxy.getToken();
-    }
-
     public List<String> getTokens()
     {
         return ssProxy.getTokens();
@@ -590,7 +584,7 @@ public class NodeProbe
     {
         // Try to find the endpoint using the local token, doing so in a crazy manner
         // to maintain backwards compatibility with the MBean interface
-        String stringToken = ssProxy.getToken();
+        String stringToken = ssProxy.getTokens().get(0);
         Map<String, String> tokenToEndpoint = ssProxy.getTokenToEndpointMap();
 
         for (Map.Entry<String, String> pair : tokenToEndpoint.entrySet())
