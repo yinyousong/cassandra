@@ -1,6 +1,6 @@
 From: Sam Overton <sam@acunu.com>
-Subject: [PATCH] p/4122/03_group_stream_out_ranges
+Subject: [PATCH] p/4125/01_admin_tools
 
-Stream out ranges in decommission as a single session instead of one-by-one
+Modifications to nodetool for viewing/managing vnodes
 
 Signed-off-by: Sam Overton <sam@acunu.com>
