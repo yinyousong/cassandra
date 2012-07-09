@@ -855,7 +855,11 @@ public class NodeCmd
 
             switch (command)
             {
-                case RING            : nodeCmd.printRing(System.out, arguments[0]); break;
+                case RING :
+                    if (arguments.length > 0) { nodeCmd.printRing(System.out, arguments[0]); }
+                    else                      { nodeCmd.printRing(System.out, null); };
+                    break;
+
                 case INFO            : nodeCmd.printInfo(System.out, cmd); break;
                 case CFSTATS         : nodeCmd.printColumnFamilyStats(System.out); break;
                 case TPSTATS         : nodeCmd.printThreadPoolStats(System.out); break;
