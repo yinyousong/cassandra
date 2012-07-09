@@ -2851,7 +2851,7 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         Collection<Collection<InetAddress>> endpointsGroupedByDc = new ArrayList<Collection<InetAddress>>();
         // mapping of dc's to nodes, use sorted map so that we get dcs sorted
         SortedMap<String, Collection<InetAddress>> sortedDcsToEndpoints = new TreeMap<String, Collection<InetAddress>>();
-        sortedDcsToEndpoints.putAll(tokenMetadata.getTopology().getDatacenterEndpoints().asMap());
+        sortedDcsToEndpoints.putAll(metadata.getTopology().getDatacenterEndpoints().asMap());
         for (Collection<InetAddress> endpoints : sortedDcsToEndpoints.values())
             endpointsGroupedByDc.add(endpoints);
 
