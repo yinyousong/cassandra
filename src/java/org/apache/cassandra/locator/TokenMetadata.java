@@ -145,15 +145,15 @@ public class TokenMetadata
      */
     public void updateNormalToken(Token token, InetAddress endpoint)
     {
-        updateNormalTokens(Collections.singleton(Pair.create(token, endpoint)));
+        updateNormalTokens(Collections.singleton(token), endpoint);
     }
 
     public void updateNormalTokens(Collection<Token> tokens, InetAddress endpoint)
     {
-        Set<Pair<Token, InetAddress>> tokenPairs = new HashSet<Pair<Token, InetAddress>>(tokens.size());
+        Multimap<InetAddress, Token> endpointTokens = HashMultimap.create();
         for (Token token : tokens)
-            tokenPairs.add(new Pair<Token, InetAddress>(token, endpoint));
-        updateNormalTokens(tokenPairs);
+            endpointTokens.put(endpoint, token);
+        updateNormalTokens(endpointTokens);
     }
 
     /**
@@ -162,42 +162,38 @@ public class TokenMetadata
      * Prefer this whenever there are multiple pairs to update, as each update (whether a single or multiple)
      * is expensive (CASSANDRA-3831).
      *
-     * @param tokenPairs
+     * @param endpointTokens
      */
-    public void updateNormalTokens(Set<Pair<Token, InetAddress>> tokenPairs)
+    public void updateNormalTokens(Multimap<InetAddress, Token> endpointTokens)
     {
-        if (tokenPairs.isEmpty())
+        if (endpointTokens.isEmpty())
             return;
 
         lock.writeLock().lock();
         try
         {
             boolean shouldSortTokens = false;
-            Set<InetAddress> resetEndpoints = new HashSet<InetAddress>();
-            for (Pair<Token, InetAddress> tokenEndpointPair : tokenPairs)
+            for (InetAddress endpoint : endpointTokens.keySet())
             {
-                Token token = tokenEndpointPair.left;
-                InetAddress endpoint = tokenEndpointPair.right;
+                Collection<Token> tokens = endpointTokens.get(endpoint);
 
-                assert token != null;
-                assert endpoint != null;
+                assert tokens != null && !tokens.isEmpty();
 
-                if (resetEndpoints.add(endpoint))
+                bootstrapTokens.removeValue(endpoint);
+                tokenToEndpointMap.removeValue(endpoint);
+                topology.addEndpoint(endpoint);
+                leavingEndpoints.remove(endpoint);
+                removeFromMoving(endpoint); // also removing this endpoint from moving
+
+                for (Token token : tokens)
                 {
-                    bootstrapTokens.removeValue(endpoint);
-                    tokenToEndpointMap.removeValue(endpoint);
-					topology.addEndpoint(endpoint);
-                    leavingEndpoints.remove(endpoint);
-                    removeFromMoving(endpoint); // also removing this endpoint from moving
-					topology.addEndpoint(endpoint);
-                }
-
-                InetAddress prev = tokenToEndpointMap.put(token, endpoint);
-                if (!endpoint.equals(prev))
-                {
-                    if (prev != null)
-                        logger.warn("Token " + token + " changing ownership from " + prev + " to " + endpoint);
-                    shouldSortTokens = true;
+                    InetAddress prev = tokenToEndpointMap.put(token, endpoint);
+                    if (!endpoint.equals(prev))
+                    {
+                        if (prev != null)
+                            logger.warn("Token " + token + " changing ownership from " + prev + " to " + endpoint);
+                        shouldSortTokens = true;
+                    }
                 }
             }
 
