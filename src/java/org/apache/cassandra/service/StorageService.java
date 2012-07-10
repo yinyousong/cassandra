@@ -583,11 +583,14 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
                 for (Token token : tokens)
                 {
                     InetAddress existing = tokenMetadata.getEndpoint(token);
-                    if (null != existing && Gossiper.instance.getEndpointStateForEndpoint(existing).getUpdateTimestamp() > (System.currentTimeMillis() - delay))
-                        throw new UnsupportedOperationException("Cannnot replace a token for a Live node... ");
-                    current.add(existing);
+                    if (null != existing)
+                    {
+                        if (Gossiper.instance.getEndpointStateForEndpoint(existing).getUpdateTimestamp() > (System.currentTimeMillis() - delay))
+                            throw new UnsupportedOperationException("Cannnot replace a token for a Live node... ");
+                        current.add(existing);
+                    }
                 }
-                
+
                 setMode(Mode.JOINING, "Replacing a node with token: " + tokens, true);
             }
 
