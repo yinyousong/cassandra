@@ -337,8 +337,9 @@ public class NodeCmd
         outs.println();
     }
 
-    /** Writes a table of cluster-wide node information to a PrintStream */
-    public void printClusterInfo(PrintStream outs, String keyspace)
+    /** Writes a table of cluster-wide node information to a PrintStream
+     * @throws UnknownHostException */
+    public void printClusterInfo(PrintStream outs, String keyspace) throws UnknownHostException
     {
         Collection<String> joiningNodes = probe.getJoiningNodes();
         Collection<String> leavingNodes = probe.getLeavingNodes();
@@ -380,17 +381,8 @@ public class NodeCmd
 
             String load = loadMap.containsKey(endpoint) ? loadMap.get(endpoint) : "?";
 
-            Float owns = 0.0F;
-            int numTokens = 0;
-            if ("Normal".equals(state))
-            {
-                List<String> tokens = probe.getTokens(endpoint);
-                for (String token : tokens)
-                    owns += (ownerships.get(token) == null) ? 0.0F : ownerships.get(token);
-                numTokens = tokens.size();
-            }
-
-            String strOwns = new DecimalFormat("##0.00%").format(owns);
+            String strOwns = new DecimalFormat("##0.00%").format(ownerships.get(InetAddress.getByName(endpoint)));
+            int numTokens = probe.getTokens(endpoint).size();
             outs.print(String.format(fmt, endpoint, status, state, load, numTokens, strOwns, entry.getValue()));
         }
     }
