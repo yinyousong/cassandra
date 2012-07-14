@@ -623,22 +623,15 @@ public class CassandraServer implements Cassandra.Iface
         ThriftValidation.validateConsistencyLevel(state().getKeyspace(), consistency_level, RequestType.WRITE);
         if (mutations.isEmpty())
             return;
+
+        schedule(DatabaseDescriptor.getWriteRpcTimeout());
         try
         {
-            schedule(DatabaseDescriptor.getWriteRpcTimeout());
-            try
-            {
-                StorageProxy.mutate(mutations, consistency_level);
-            }
-            finally
-            {
-                release();
-            }
+            StorageProxy.mutate(mutations, consistency_level);
         }
-        catch (TimeoutException e)
+        finally
         {
-            logger.debug("... timed out");
-            throw new TimedOutException();
+            release();
         }
     }
 
@@ -900,9 +893,16 @@ public class CassandraServer implements Cassandra.Iface
     /**
      * Schedule the current thread for access to the required services
      */
-    private void schedule(long timeoutMS) throws TimeoutException
+    private void schedule(long timeoutMS) throws UnavailableException
     {
-        requestScheduler.queue(Thread.currentThread(), state().getSchedulingValue(), timeoutMS);
+        try
+        {
+            requestScheduler.queue(Thread.currentThread(), state().getSchedulingValue(), timeoutMS);
+        }
+        catch (TimeoutException e)
+        {
+            throw new UnavailableException();
+        }
     }
 
     /**
