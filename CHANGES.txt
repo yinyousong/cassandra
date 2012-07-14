@@ -1,4 +1,6 @@
 1.2-dev
+ * Introduce new json format with row level deletion (CASSANDRA-4054)
+ * remove redundant "name" column from schema_keyspaces (CASSANDRA-4433)
  * improve "nodetool ring" handling of multi-dc clusters (CASSANDRA-3047)
  * update NTS calculateNaturalEndpoints to be O(N log N) (CASSANDRA-3881)
  * add UseCondCardMark XX jvm settings on jdk 1.7 (CASSANDRA-4366)
@@ -10,7 +12,7 @@
  * add inter-node message compression (CASSANDRA-3127)
  * remove COPP (CASSANDRA-2479)
  * Track tombstone expiration and compact when tombstone content is
-   higher than a configurable threshold, default 20% (CASSANDRA-3442)
+   higher than a configurable threshold, default 20% (CASSANDRA-3442, 4234)
  * update MurmurHash to version 3 (CASSANDRA-2975)
  * (CLI) track elapsed time for `delete' operation (CASSANDRA-4060)
  * (CLI) jline version is bumped to 1.0 to properly  support
@@ -40,9 +42,12 @@
  * (cql3) Support ORDER BY when IN condition is given in WHERE clause (CASSANDRA-4327)
  * (cql3) delete "component_index" column on DROP TABLE call (CASSANDRA-4420)
  * change nanoTime() to currentTimeInMillis() in schema related code (CASSANDRA-4432)
+ * add a token generation tool (CASSANDRA-3709)
 Merged from 1.0:
  * allow dropping columns shadowed by not-yet-expired supercolumn or row
    tombstones in PrecompactedRow (CASSANDRA-4396)
+ * fix 1.0.x node join to mixed version cluster, other nodes >= 1.1 (CASSANDRA-4195)
+ * Fix LCS splitting sstable base on uncompressed size (CASSANDRA-4419)
 
 
 1.1.2
