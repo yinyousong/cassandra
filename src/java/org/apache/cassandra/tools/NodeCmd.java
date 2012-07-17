@@ -38,12 +38,15 @@ import org.apache.cassandra.config.ConfigurationException;
 import org.apache.cassandra.db.ColumnFamilyStoreMBean;
 import org.apache.cassandra.db.compaction.CompactionManagerMBean;
 import org.apache.cassandra.db.compaction.OperationType;
+import org.apache.cassandra.locator.EndpointSnitchInfo;
+import org.apache.cassandra.locator.EndpointSnitchInfoMBean;
 import org.apache.cassandra.net.MessagingServiceMBean;
 import org.apache.cassandra.service.CacheServiceMBean;
 import org.apache.cassandra.service.StorageProxyMBean;
 import org.apache.cassandra.thrift.InvalidRequestException;
 import org.apache.cassandra.utils.EstimatedHistogram;
 import org.apache.cassandra.utils.Pair;
+import org.apache.rat.document.UnreadableArchiveException;
 
 public class NodeCmd
 {
@@ -337,54 +340,157 @@ public class NodeCmd
         outs.println();
     }
 
+    private class ClusterInfo
+    {
+        String kSpace = null, format = null;
+        Collection<String> joiningNodes, leavingNodes, movingNodes, liveNodes, unreachableNodes;
+        Map<String, String> loadMap, hostIDMap, tokensToEndpoints;
+        EndpointSnitchInfoMBean epSnitchInfo;
+        PrintStream outs;
+
+        ClusterInfo(PrintStream outs, String kSpace)
+        {
+            this.kSpace = kSpace;
+            this.outs = outs;
+            joiningNodes = probe.getJoiningNodes();
+            leavingNodes = probe.getLeavingNodes();
+            movingNodes = probe.getMovingNodes();
+            loadMap = probe.getLoadMap();
+            tokensToEndpoints = probe.getTokenToEndpointMap();
+            liveNodes = probe.getLiveNodes();
+            unreachableNodes = probe.getUnreachableNodes();
+            hostIDMap = probe.getHostIdMap();
+            epSnitchInfo = probe.getEndpointSnitchInfoProxy();
+        }
+
+        private void printStatusLegend()
+        {
+            outs.println("Status=Up/Down");
+            outs.println("|/ State=Normal/Leaving/Joining/Moving");
+        }
+
+        private Map<String, Map<InetAddress, Float>> getOwnershipByDc(Map<InetAddress, Float> ownerships)
+        throws UnknownHostException
+        {
+            Map<String, Map<InetAddress, Float>> ownershipByDc = Maps.newLinkedHashMap();
+            EndpointSnitchInfoMBean epSnitchInfo = probe.getEndpointSnitchInfoProxy();
+
+            for (Map.Entry<InetAddress, Float> ownership : ownerships.entrySet())
+            {
+                String dc = epSnitchInfo.getDatacenter(ownership.getKey().getHostAddress());
+                if (!ownershipByDc.containsKey(dc))
+                    ownershipByDc.put(dc, new LinkedHashMap<InetAddress, Float>());
+                ownershipByDc.get(dc).put(ownership.getKey(), ownership.getValue());
+            }
+
+            return ownershipByDc;
+        }
+
+        private String getFormat(boolean hasEffectiveOwns, boolean isTokenPerNode)
+        {
+            if (format == null)
+            {
+                StringBuffer buf = new StringBuffer();
+                buf.append("%s%s  %-16s  %-8s  ");            // status, address, and load
+                if (!isTokenPerNode)  buf.append("%-6s  ");   // "Tokens"
+                if (hasEffectiveOwns) buf.append("%-16s  ");  // "Owns (effective)"
+                else                  buf.append("%-5s  ");   // "Owns
+                buf.append("%-36s  ");                        // Host ID
+                if (isTokenPerNode)   buf.append("%-39s  ");  // token
+                buf.append("%s%n");                           // "Rack"
+
+                format = buf.toString();
+            }
+
+            return format;
+        }
+
+        private void printNode(String endpoint, Float owns, Map<InetAddress, Float> ownerships,
+                boolean hasEffectiveOwns, boolean isTokenPerNode) throws UnknownHostException
+        {
+            String status, state, load, strOwns, hostID, rack, fmt;
+            fmt = getFormat(hasEffectiveOwns, isTokenPerNode);
+
+            if      (liveNodes.contains(endpoint))        status = "U";
+            else if (unreachableNodes.contains(endpoint)) status = "D";
+            else                                          status = "?";
+            if      (joiningNodes.contains(endpoint))     state = "J";
+            else if (leavingNodes.contains(endpoint))     state = "L";
+            else if (movingNodes.contains(endpoint))      state = "M";
+            else                                          state = "N";
+
+            load = loadMap.containsKey(endpoint) ? loadMap.get(endpoint) : "?";
+            strOwns = new DecimalFormat("##0.0%").format(ownerships.get(InetAddress.getByName(endpoint)));
+            hostID = hostIDMap.get(endpoint);
+            rack = epSnitchInfo.getRack(endpoint);
+
+            if (isTokenPerNode)
+            {
+                outs.printf(fmt, status, state, endpoint, load, strOwns, hostID, probe.getTokens(endpoint).get(0), rack);
+            }
+            else
+            {
+                int tokens = probe.getTokens(endpoint).size();
+                outs.printf(fmt, status, state, endpoint, load, tokens, strOwns, hostID, rack);
+            }
+        }
+
+        private void printNodesHeader(boolean hasEffectiveOwns, boolean isTokenPerNode)
+        {
+            String fmt = getFormat(hasEffectiveOwns, isTokenPerNode);
+            String owns = hasEffectiveOwns ? "Owns (effective)" : "Owns";
+
+            if (isTokenPerNode)
+                outs.printf(fmt, "+", "+", "Address", "Load", owns, "Host ID", "Token", "Rack");
+            else
+                outs.printf(fmt, "+", "+", "Address", "Load", "Tokens", owns, "Host ID", "Rack");
+        }
+
+        void print() throws UnknownHostException
+        {
+            Map<InetAddress, Float> ownerships;
+            boolean hasEffectiveOwns = false, isTokenPerNode = true;
+            try
+            {
+                ownerships = probe.effectiveOwnership(kSpace);
+                hasEffectiveOwns = true;
+            }
+            catch (ConfigurationException e)
+            {
+                ownerships = probe.getOwnership();
+            }
+
+            // More tokens then nodes (aka vnodes)?
+            if (new HashSet<String>(tokensToEndpoints.values()).size() < tokensToEndpoints.keySet().size())
+                isTokenPerNode = false;
+
+            // Datacenters
+            for (Map.Entry<String, Map<InetAddress, Float>> dc : getOwnershipByDc(ownerships).entrySet())
+            {
+                String dcHeader = String.format("Datacenter: %s%n", dc.getKey());
+                outs.printf(dcHeader);
+                for (int i=0; i < (dcHeader.length() - 1); i++) outs.print('=');
+                outs.println();
+
+                printStatusLegend();
+                printNodesHeader(hasEffectiveOwns, isTokenPerNode);
+
+                // Nodes
+                for (Map.Entry<InetAddress, Float> entry : dc.getValue().entrySet())
+                    printNode(entry.getKey().getHostAddress(),
+                              entry.getValue(),
+                              ownerships,
+                              hasEffectiveOwns,
+                              isTokenPerNode);
+            }
+        }
+    }
+
     /** Writes a table of cluster-wide node information to a PrintStream
      * @throws UnknownHostException */
     public void printClusterInfo(PrintStream outs, String keyspace) throws UnknownHostException
     {
-        Collection<String> joiningNodes = probe.getJoiningNodes();
-        Collection<String> leavingNodes = probe.getLeavingNodes();
-        Collection<String> movingNodes = probe.getMovingNodes();
-        Map<String, String> loadMap = probe.getLoadMap();
-
-        String fmt;
-
-        // Calculate per-token ownership of the ring
-        Map<InetAddress, Float> ownerships;
-        try
-        {
-            ownerships = probe.effectiveOwnership(keyspace);
-            fmt = "%-16s %-7s %-8s %-10s %-7s %-16s %s%n";
-            outs.print(String.format(fmt, "Address", "Status", "State", "Load", "Tokens", "Owns (effective)", "Host ID"));
-        }
-        catch (ConfigurationException ex)
-        {
-            ownerships = probe.getOwnership();
-            fmt = "%-16s %-7s %-8s %-10s %-7s %-7s %s%n";
-            outs.printf("Warn: Ownership information does not include topology, please specify a keyspace. \n");
-            outs.print(String.format(fmt, "Address", "Status", "State", "Load", "Tokens", "Owns", "Host ID"));
-        }
-
-        for (Map.Entry<String, String> entry : probe.getHostIdMap().entrySet())
-        {
-            String endpoint = entry.getKey();
-
-            String status;
-            if      (probe.getLiveNodes().contains(endpoint))        status = "Up";
-            else if (probe.getUnreachableNodes().contains(endpoint)) status = "Down";
-            else                                                     status = "?";
-
-            String state;
-            if      (joiningNodes.contains(endpoint)) state = "Joining";
-            else if (leavingNodes.contains(endpoint)) state = "Leaving";
-            else if (movingNodes.contains(endpoint))  state = "Moving";
-            else                                      state = "Normal";
-
-            String load = loadMap.containsKey(endpoint) ? loadMap.get(endpoint) : "?";
-
-            String strOwns = new DecimalFormat("##0.00%").format(ownerships.get(InetAddress.getByName(endpoint)));
-            int numTokens = probe.getTokens(endpoint).size();
-            outs.print(String.format(fmt, endpoint, status, state, load, numTokens, strOwns, entry.getValue()));
-        }
+        new ClusterInfo(outs, keyspace).print();
     }
 
     public void printThreadPoolStats(PrintStream outs)
