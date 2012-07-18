@@ -91,7 +91,6 @@ public class NodeCmd
         CFSTATS,
         CLEANUP,
         CLEARSNAPSHOT,
-        CLUSTERINFO,
         COMPACT,
         COMPACTIONSTATS,
         DECOMMISSION,
@@ -124,6 +123,7 @@ public class NodeCmd
         SETCOMPACTIONTHROUGHPUT,
         SETSTREAMTHROUGHPUT,
         SNAPSHOT,
+        STATUS,
         STATUSTHRIFT,
         STOP,
         TPSTATS,
@@ -148,7 +148,7 @@ public class NodeCmd
         addCmdHelp(header, "ring", "Print information about the token ring");
         addCmdHelp(header, "join", "Join the ring");
         addCmdHelp(header, "info [-T/--tokens]", "Print node information (uptime, load, ...)");
-        addCmdHelp(header, "clusterinfo", "Print cluster informations (status, load, IDs, ...)");
+        addCmdHelp(header, "status", "Print cluster information (state, load, IDs, ...)");
         addCmdHelp(header, "cfstats", "Print statistics on column families");
         addCmdHelp(header, "version", "Print cassandra version");
         addCmdHelp(header, "tpstats", "Print usage statistics of thread pools");
@@ -340,7 +340,7 @@ public class NodeCmd
         outs.println();
     }
 
-    private class ClusterInfo
+    private class ClusterStatus
     {
         String kSpace = null, format = null;
         Collection<String> joiningNodes, leavingNodes, movingNodes, liveNodes, unreachableNodes;
@@ -348,7 +348,7 @@ public class NodeCmd
         EndpointSnitchInfoMBean epSnitchInfo;
         PrintStream outs;
 
-        ClusterInfo(PrintStream outs, String kSpace)
+        ClusterStatus(PrintStream outs, String kSpace)
         {
             this.kSpace = kSpace;
             this.outs = outs;
@@ -488,9 +488,9 @@ public class NodeCmd
 
     /** Writes a table of cluster-wide node information to a PrintStream
      * @throws UnknownHostException */
-    public void printClusterInfo(PrintStream outs, String keyspace) throws UnknownHostException
+    public void printClusterStatus(PrintStream outs, String keyspace) throws UnknownHostException
     {
-        new ClusterInfo(outs, keyspace).print();
+        new ClusterStatus(outs, keyspace).print();
     }
 
     public void printThreadPoolStats(PrintStream outs)
@@ -970,9 +970,9 @@ public class NodeCmd
                 case STATUSTHRIFT    : nodeCmd.printIsThriftServerRunning(System.out); break;
                 case RESETLOCALSCHEMA: probe.resetLocalSchema(); break;
 
-                case CLUSTERINFO :
-                    if (arguments.length > 0) nodeCmd.printClusterInfo(System.out, arguments[0]);
-                    else                      nodeCmd.printClusterInfo(System.out, null);
+                case STATUS :
+                    if (arguments.length > 0) nodeCmd.printClusterStatus(System.out, arguments[0]);
+                    else                      nodeCmd.printClusterStatus(System.out, null);
                     break;
 
                 case DECOMMISSION :
