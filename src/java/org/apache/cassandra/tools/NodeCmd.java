@@ -441,9 +441,9 @@ public class NodeCmd
             String owns = hasEffectiveOwns ? "Owns (effective)" : "Owns";
 
             if (isTokenPerNode)
-                outs.printf(fmt, "+", "+", "Address", "Load", owns, "Host ID", "Token", "Rack");
+                outs.printf(fmt, "-", "-", "Address", "Load", owns, "Host ID", "Token", "Rack");
             else
-                outs.printf(fmt, "+", "+", "Address", "Load", "Tokens", owns, "Host ID", "Rack");
+                outs.printf(fmt, "-", "-", "Address", "Load", "Tokens", owns, "Host ID", "Rack");
         }
 
         void print() throws UnknownHostException
