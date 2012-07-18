@@ -2933,31 +2933,6 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
         // calculate ownership per dc
         for (Collection<InetAddress> endpoints : endpointsGroupedByDc)
         {
-            // sort the endpoints by their tokens
-            List<InetAddress> sortedEndpoints = Lists.newArrayListWithExpectedSize(endpoints.size());
-            sortedEndpoints.addAll(endpoints);
-
-            Collections.sort(sortedEndpoints, new Comparator<InetAddress>()
-            {
-                public int compare(InetAddress o1, InetAddress o2)
-                {
-                    byte[] b1 = o1.getAddress();
-                    byte[] b2 = o2.getAddress();
-
-                    if(b1.length < b2.length) return -1;
-                    if(b1.length > b2.length) return 1;
-
-                    for(int i = 0; i < b1.length; i++)
-                    {
-                        int left = (int)b1[i] & 0xFF;
-                        int right = (int)b2[i] & 0xFF;
-                        if (left < right)       return -1;
-                        else if (left > right)  return 1;
-                    }
-                    return 0;
-                }
-            });
-
             // calculate the ownership with replication and add the endpoint to the final ownership map
             for (InetAddress endpoint : endpoints)
             {
