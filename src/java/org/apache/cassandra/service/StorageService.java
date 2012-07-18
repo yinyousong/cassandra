@@ -2913,8 +2913,8 @@ public class StorageService implements IEndpointStateChangeSubscriber, StorageSe
                 float ownership = 0.0f;
                 for (Range<Token> range : getRangesForEndpoint(keyspace, endpoint))
                 {
-                    if (tokenOwnership.containsKey(range.left))
-                        ownership += tokenOwnership.get(range.left);
+                    if (tokenOwnership.containsKey(range.right))
+                        ownership += tokenOwnership.get(range.right);
                 }
                 finalOwnership.put(endpoint, ownership);
             }
