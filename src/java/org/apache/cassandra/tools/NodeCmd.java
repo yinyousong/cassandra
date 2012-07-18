@@ -391,7 +391,7 @@ public class NodeCmd
             if (format == null)
             {
                 StringBuffer buf = new StringBuffer();
-                buf.append("%s%s  %-16s  %-8s  ");            // status, address, and load
+                buf.append("%s%s  %-16s  %-9s  ");            // status, address, and load
                 if (!isTokenPerNode)  buf.append("%-6s  ");   // "Tokens"
                 if (hasEffectiveOwns) buf.append("%-16s  ");  // "Owns (effective)"
                 else                  buf.append("%-5s  ");   // "Owns
@@ -441,9 +441,9 @@ public class NodeCmd
             String owns = hasEffectiveOwns ? "Owns (effective)" : "Owns";
 
             if (isTokenPerNode)
-                outs.printf(fmt, "+", "+", "Address", "Load", owns, "Host ID", "Token", "Rack");
+                outs.printf(fmt, "-", "-", "Address", "Load", owns, "Host ID", "Token", "Rack");
             else
-                outs.printf(fmt, "+", "+", "Address", "Load", "Tokens", owns, "Host ID", "Rack");
+                outs.printf(fmt, "-", "-", "Address", "Load", "Tokens", owns, "Host ID", "Rack");
         }
 
         void print() throws UnknownHostException
