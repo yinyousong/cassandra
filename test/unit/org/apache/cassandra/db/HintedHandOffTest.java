@@ -1,4 +1,3 @@
-package org.apache.cassandra.db;
 /*
  * 
  * Licensed to the Apache Software Foundation (ASF) under one
@@ -19,35 +18,50 @@ package org.apache.cassandra.db;
  * under the License.
  * 
  */
-
+package org.apache.cassandra.db;
 
 import java.net.InetAddress;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
+import org.junit.BeforeClass;
 import org.junit.Test;
 
+import com.google.common.collect.Iterators;
+
 import org.apache.cassandra.SchemaLoader;
+import org.apache.cassandra.Util;
+import org.apache.cassandra.config.KSMetaData;
 import org.apache.cassandra.cql3.UntypedResultSet;
 import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.db.compaction.SizeTieredCompactionStrategy;
 import org.apache.cassandra.db.marshal.Int32Type;
 import org.apache.cassandra.db.marshal.UUIDType;
+import org.apache.cassandra.exceptions.ConfigurationException;
+import org.apache.cassandra.locator.SimpleStrategy;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
 
-import com.google.common.collect.Iterators;
-
 import static org.junit.Assert.assertEquals;
-import static org.apache.cassandra.cql3.QueryProcessor.processInternal;
+import static org.apache.cassandra.cql3.QueryProcessor.executeInternal;
 
-public class HintedHandOffTest extends SchemaLoader
+public class HintedHandOffTest
 {
 
-    public static final String KEYSPACE4 = "Keyspace4";
+    public static final String KEYSPACE4 = "HintedHandOffTest4";
     public static final String STANDARD1_CF = "Standard1";
     public static final String COLUMN1 = "column1";
+
+    @BeforeClass
+    public static void defineSchema() throws ConfigurationException
+    {
+        SchemaLoader.prepareServer();
+        SchemaLoader.createKeyspace(KEYSPACE4,
+                                    SimpleStrategy.class,
+                                    KSMetaData.optsWithRF(1),
+                                    SchemaLoader.standardCFMD(KEYSPACE4, STANDARD1_CF));
+    }
 
     // Test compaction of hints column family. It shouldn't remove all columns on compaction.
     @Test
@@ -62,10 +76,14 @@ public class HintedHandOffTest extends SchemaLoader
         hintStore.disableAutoCompaction();
 
         // insert 1 hint
-        RowMutation rm = new RowMutation(KEYSPACE4, ByteBufferUtil.bytes(1));
-        rm.add(STANDARD1_CF, ByteBufferUtil.bytes(String.valueOf(COLUMN1)), ByteBufferUtil.EMPTY_BYTE_BUFFER, System.currentTimeMillis());
+        Mutation rm = new Mutation(KEYSPACE4, ByteBufferUtil.bytes(1));
+        rm.add(STANDARD1_CF, Util.cellname(COLUMN1), ByteBufferUtil.EMPTY_BYTE_BUFFER, System.currentTimeMillis());
 
-        HintedHandOffManager.instance.hintFor(rm, HintedHandOffManager.calculateHintTTL(rm), UUID.randomUUID()).apply();
+        HintedHandOffManager.instance.hintFor(rm,
+                                              System.currentTimeMillis(),
+                                              HintedHandOffManager.calculateHintTTL(rm),
+                                              UUID.randomUUID())
+                                     .applyUnsafe();
 
         // flush data to disk
         hintStore.forceBlockingFlush();
@@ -88,8 +106,44 @@ public class HintedHandOffTest extends SchemaLoader
             HintedHandOffManager.instance.metrics.incrPastWindow(InetAddress.getLocalHost());
         HintedHandOffManager.instance.metrics.log();
 
-        UntypedResultSet rows = processInternal("SELECT hints_dropped FROM system." + SystemKeyspace.PEER_EVENTS_CF);
+        UntypedResultSet rows = executeInternal("SELECT hints_dropped FROM system." + SystemKeyspace.PEER_EVENTS_CF);
         Map<UUID, Integer> returned = rows.one().getMap("hints_dropped", UUIDType.instance, Int32Type.instance);
         assertEquals(Iterators.getLast(returned.values().iterator()).intValue(), 99);
+    }
+
+    @Test(timeout = 5000)
+    public void testTruncateHints() throws Exception
+    {
+        Keyspace systemKeyspace = Keyspace.open("system");
+        ColumnFamilyStore hintStore = systemKeyspace.getColumnFamilyStore(SystemKeyspace.HINTS_CF);
+        hintStore.clearUnsafe();
+
+        // insert 1 hint
+        Mutation rm = new Mutation(KEYSPACE4, ByteBufferUtil.bytes(1));
+        rm.add(STANDARD1_CF, Util.cellname(COLUMN1), ByteBufferUtil.EMPTY_BYTE_BUFFER, System.currentTimeMillis());
+
+        HintedHandOffManager.instance.hintFor(rm,
+                                              System.currentTimeMillis(),
+                                              HintedHandOffManager.calculateHintTTL(rm),
+                                              UUID.randomUUID())
+                                     .applyUnsafe();
+
+        assert getNoOfHints() == 1;
+
+        HintedHandOffManager.instance.truncateAllHints();
+
+        while(getNoOfHints() > 0)
+        {
+            Thread.sleep(100);
+        }
+
+        assert getNoOfHints() == 0;
+    }
+
+    private int getNoOfHints()
+    {
+        String req = "SELECT * FROM system.%s";
+        UntypedResultSet resultSet = executeInternal(String.format(req, SystemKeyspace.HINTS_CF));
+        return resultSet.size();
     }
 }

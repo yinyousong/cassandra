@@ -26,6 +26,7 @@ import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.filter.*;
 import org.apache.cassandra.io.IVersionedSerializer;
+import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
@@ -74,7 +75,7 @@ public class SliceByNamesReadCommand extends ReadCommand
 
 class SliceByNamesReadCommandSerializer implements IVersionedSerializer<ReadCommand>
 {
-    public void serialize(ReadCommand cmd, DataOutput out, int version) throws IOException
+    public void serialize(ReadCommand cmd, DataOutputPlus out, int version) throws IOException
     {
         SliceByNamesReadCommand command = (SliceByNamesReadCommand) cmd;
         out.writeBoolean(command.isDigestQuery());
@@ -82,7 +83,9 @@ class SliceByNamesReadCommandSerializer implements IVersionedSerializer<ReadComm
         ByteBufferUtil.writeWithShortLength(command.key, out);
         out.writeUTF(command.cfName);
         out.writeLong(cmd.timestamp);
-        NamesQueryFilter.serializer.serialize(command.filter, out, version);
+
+        CFMetaData metadata = Schema.instance.getCFMetaData(cmd.ksName, cmd.cfName);
+        metadata.comparator.namesQueryFilterSerializer().serialize(command.filter, out, version);
     }
 
     public ReadCommand deserialize(DataInput in, int version) throws IOException
@@ -93,7 +96,7 @@ class SliceByNamesReadCommandSerializer implements IVersionedSerializer<ReadComm
         String cfName = in.readUTF();
         long timestamp = in.readLong();
         CFMetaData metadata = Schema.instance.getCFMetaData(keyspaceName, cfName);
-        NamesQueryFilter filter = NamesQueryFilter.serializer.deserialize(in, version, metadata.comparator);
+        NamesQueryFilter filter = metadata.comparator.namesQueryFilterSerializer().deserialize(in, version);
         ReadCommand command = new SliceByNamesReadCommand(keyspaceName, key, cfName, timestamp, filter);
         command.setDigestQuery(isDigest);
         return command;
@@ -106,11 +109,13 @@ class SliceByNamesReadCommandSerializer implements IVersionedSerializer<ReadComm
         int size = sizes.sizeof(command.isDigestQuery());
         int keySize = command.key.remaining();
 
+        CFMetaData metadata = Schema.instance.getCFMetaData(cmd.ksName, cmd.cfName);
+
         size += sizes.sizeof(command.ksName);
         size += sizes.sizeof((short)keySize) + keySize;
         size += sizes.sizeof(command.cfName);
         size += sizes.sizeof(cmd.timestamp);
-        size += NamesQueryFilter.serializer.serializedSize(command.filter, version);
+        size += metadata.comparator.namesQueryFilterSerializer().serializedSize(command.filter, version);
 
         return size;
     }

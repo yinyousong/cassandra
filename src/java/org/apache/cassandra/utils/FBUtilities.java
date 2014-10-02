@@ -70,10 +70,10 @@ public class FBUtilities
     public static final BigInteger TWO = new BigInteger("2");
     private static final String DEFAULT_TRIGGER_DIR = "triggers";
 
-    private static final String OPERATING_SYSTEM = System.getProperty("os.name").toLowerCase();
-
     private static volatile InetAddress localInetAddress;
     private static volatile InetAddress broadcastInetAddress;
+
+    private static final boolean isWindows = System.getProperty("os.name").startsWith("Windows");
 
     public static int getAvailableProcessors()
     {
@@ -100,15 +100,6 @@ public class FBUtilities
         }
     };
 
-    private static final ThreadLocal<Random> localRandom = new ThreadLocal<Random>()
-    {
-        @Override
-        protected Random initialValue()
-        {
-            return new Random();
-        }
-    };
-
     public static final int MAX_UNSIGNED_SHORT = 0xFFFF;
 
     public static MessageDigest threadLocalMD5Digest()
@@ -126,11 +117,6 @@ public class FBUtilities
         {
             throw new RuntimeException("the requested digest algorithm (" + algorithm + ") is not available", nsae);
         }
-    }
-
-    public static Random threadLocalRandom()
-    {
-        return localRandom.get();
     }
 
     /**
@@ -213,7 +199,7 @@ public class FBUtilities
 
     public static int compareUnsigned(byte[] bytes1, byte[] bytes2, int offset1, int offset2, int len1, int len2)
     {
-        return FastByteComparisons.compareTo(bytes1, offset1, len1, bytes2, offset2, len2);
+        return FastByteOperations.compareUnsigned(bytes1, offset1, len1, bytes2, offset2, len2);
     }
 
     public static int compareUnsigned(byte[] bytes1, byte[] bytes2)
@@ -245,13 +231,6 @@ public class FBUtilities
         return out;
     }
 
-    public static BigInteger hashToBigInteger(ByteBuffer data)
-    {
-        byte[] result = hash(data);
-        BigInteger hash = new BigInteger(result);
-        return hash.abs();
-    }
-
     public static byte[] hash(ByteBuffer... data)
     {
         MessageDigest messageDigest = localMD5Digest.get();
@@ -264,6 +243,11 @@ public class FBUtilities
         }
 
         return messageDigest.digest();
+    }
+
+    public static BigInteger hashToBigInteger(ByteBuffer data)
+    {
+        return new BigInteger(hash(data)).abs();
     }
 
     @Deprecated
@@ -315,8 +299,8 @@ public class FBUtilities
             {
                 public int compare(DecoratedKey o1, DecoratedKey o2)
                 {
-                    if ((right.compareTo(o1.token) < 0 && right.compareTo(o2.token) < 0)
-                        || (right.compareTo(o1.token) > 0 && right.compareTo(o2.token) > 0))
+                    if ((right.compareTo(o1.getToken()) < 0 && right.compareTo(o2.getToken()) < 0)
+                        || (right.compareTo(o1.getToken()) > 0 && right.compareTo(o2.getToken()) > 0))
                     {
                         // both tokens are on the same side of the wrap point
                         return o1.compareTo(o2);
@@ -340,7 +324,7 @@ public class FBUtilities
         if (scpurl == null)
             throw new ConfigurationException("unable to locate " + filename);
 
-        return scpurl.getFile();
+        return new File(scpurl.getFile()).getAbsolutePath();
     }
 
     public static File cassandraTriggerDir()
@@ -372,7 +356,7 @@ public class FBUtilities
             in = FBUtilities.class.getClassLoader().getResourceAsStream("org/apache/cassandra/config/version.properties");
             if (in == null)
             {
-                return "Unknown";
+                return System.getProperty("cassandra.releaseVersion", "Unknown");
             }
             Properties props = new Properties();
             props.load(in);
@@ -504,9 +488,11 @@ public class FBUtilities
         }
     }
 
-    public static <T extends Comparable> SortedSet<T> singleton(T column)
+    public static <T> SortedSet<T> singleton(T column, Comparator<? super T> comparator)
     {
-        return new TreeSet<T>(Arrays.asList(column));
+        SortedSet<T> s = new TreeSet<T>(comparator);
+        s.add(column);
+        return s;
     }
 
     public static String toString(Map<?,?> map)
@@ -591,17 +577,20 @@ public class FBUtilities
             int errCode = p.waitFor();
             if (errCode != 0)
             {
-                BufferedReader in = new BufferedReader(new InputStreamReader(p.getInputStream()));
-                BufferedReader err = new BufferedReader(new InputStreamReader(p.getErrorStream()));
-                StringBuilder sb = new StringBuilder();
-                String str;
-                while ((str = in.readLine()) != null)
-                    sb.append(str).append(System.getProperty("line.separator"));
-                while ((str = err.readLine()) != null)
-                    sb.append(str).append(System.getProperty("line.separator"));
-                throw new IOException("Exception while executing the command: "+ StringUtils.join(pb.command(), " ") +
-                                      ", command error Code: " + errCode +
-                                      ", command output: "+ sb.toString());
+            	try (BufferedReader in = new BufferedReader(new InputStreamReader(p.getInputStream()));
+                     BufferedReader err = new BufferedReader(new InputStreamReader(p.getErrorStream())))
+                {
+            		String lineSep = System.getProperty("line.separator");
+	                StringBuilder sb = new StringBuilder();
+	                String str;
+	                while ((str = in.readLine()) != null)
+	                    sb.append(str).append(lineSep);
+	                while ((str = err.readLine()) != null)
+	                    sb.append(str).append(lineSep);
+	                throw new IOException("Exception while executing the command: "+ StringUtils.join(pb.command(), " ") +
+	                                      ", command error Code: " + errCode +
+	                                      ", command output: "+ sb.toString());
+                }
             }
         }
         catch (InterruptedException e)
@@ -616,6 +605,12 @@ public class FBUtilities
         checksum.update((v >>> 16) & 0xFF);
         checksum.update((v >>> 8) & 0xFF);
         checksum.update((v >>> 0) & 0xFF);
+    }
+
+    public static long abs(long index)
+    {
+        long negbit = index >> 63;
+        return (index ^ negbit) - negbit;
     }
 
     private static final class WrappedCloseableIterator<T>
@@ -685,6 +680,37 @@ public class FBUtilities
 
     public static boolean isUnix()
     {
-        return OPERATING_SYSTEM.contains("nix") || OPERATING_SYSTEM.contains("nux") || OPERATING_SYSTEM.contains("aix");
+        return !isWindows;
+    }
+
+    public static void updateWithShort(MessageDigest digest, int val)
+    {
+        digest.update((byte) ((val >> 8) & 0xFF));
+        digest.update((byte) (val & 0xFF));
+    }
+
+    public static void updateWithByte(MessageDigest digest, int val)
+    {
+        digest.update((byte) (val & 0xFF));
+    }
+
+    public static void updateWithInt(MessageDigest digest, int val)
+    {
+        digest.update((byte) ((val >>> 24) & 0xFF));
+        digest.update((byte) ((val >>> 16) & 0xFF));
+        digest.update((byte) ((val >>>  8) & 0xFF));
+        digest.update((byte) ((val >>> 0) & 0xFF));
+    }
+
+    public static void updateWithLong(MessageDigest digest, long val)
+    {
+        digest.update((byte) ((val >>> 56) & 0xFF));
+        digest.update((byte) ((val >>> 48) & 0xFF));
+        digest.update((byte) ((val >>> 40) & 0xFF));
+        digest.update((byte) ((val >>> 32) & 0xFF));
+        digest.update((byte) ((val >>> 24) & 0xFF));
+        digest.update((byte) ((val >>> 16) & 0xFF));
+        digest.update((byte) ((val >>>  8) & 0xFF));
+        digest.update((byte)  ((val >>> 0) & 0xFF));
     }
 }

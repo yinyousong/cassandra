@@ -20,73 +20,80 @@ package org.apache.cassandra.db.compaction;
  * 
  */
 
-
-
-import java.util.concurrent.ExecutionException;
+import org.junit.BeforeClass;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.apache.cassandra.OrderedJUnit4ClassRunner;
 import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.Util;
-import org.apache.cassandra.db.ColumnFamilyStore;
-import org.apache.cassandra.db.DataRange;
-import org.apache.cassandra.db.DecoratedKey;
-import org.apache.cassandra.db.Keyspace;
-import org.apache.cassandra.db.RowMutation;
-import org.apache.cassandra.db.RowPosition;
-import org.apache.cassandra.db.columniterator.IdentityQueryFilter;
+import org.apache.cassandra.config.KSMetaData;
+import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.columniterator.OnDiskAtomIterator;
-import org.apache.cassandra.db.filter.QueryFilter;
+import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.sstable.SSTableReader;
 import org.apache.cassandra.io.sstable.SSTableScanner;
+import org.apache.cassandra.locator.SimpleStrategy;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 @RunWith(OrderedJUnit4ClassRunner.class)
-public class TTLExpiryTest extends SchemaLoader
+public class TTLExpiryTest
 {
-    @Test
-    public void testSimpleExpire() throws ExecutionException, InterruptedException
+    public static final String KEYSPACE1 = "TTLExpiryTest";
+    private static final String CF_STANDARD1 = "Standard1";
+
+    @BeforeClass
+    public static void defineSchema() throws ConfigurationException
     {
-        ColumnFamilyStore cfs = Keyspace.open("Keyspace1").getColumnFamilyStore("Standard1");
+        SchemaLoader.prepareServer();
+        SchemaLoader.createKeyspace(KEYSPACE1,
+                                    SimpleStrategy.class,
+                                    KSMetaData.optsWithRF(1),
+                                    SchemaLoader.standardCFMD(KEYSPACE1, CF_STANDARD1));
+    }
+
+    @Test
+    public void testSimpleExpire() throws InterruptedException
+    {
+        ColumnFamilyStore cfs = Keyspace.open(KEYSPACE1).getColumnFamilyStore("Standard1");
         cfs.disableAutoCompaction();
         cfs.metadata.gcGraceSeconds(0);
         long timestamp = System.currentTimeMillis();
-        RowMutation rm = new RowMutation("Keyspace1", Util.dk("ttl").key);
-        rm.add("Standard1", ByteBufferUtil.bytes("col"),
+        Mutation rm = new Mutation(KEYSPACE1, Util.dk("ttl").getKey());
+        rm.add("Standard1", Util.cellname("col"),
                ByteBufferUtil.EMPTY_BYTE_BUFFER,
                timestamp,
                1);
-        rm.add("Standard1", ByteBufferUtil.bytes("col7"),
+        rm.add("Standard1", Util.cellname("col7"),
                ByteBufferUtil.EMPTY_BYTE_BUFFER,
                timestamp,
                1);
 
-        rm.apply();
+        rm.applyUnsafe();
         cfs.forceBlockingFlush();
 
-        rm = new RowMutation("Keyspace1", Util.dk("ttl").key);
-                rm.add("Standard1", ByteBufferUtil.bytes("col2"),
+        rm = new Mutation(KEYSPACE1, Util.dk("ttl").getKey());
+                rm.add("Standard1", Util.cellname("col2"),
                        ByteBufferUtil.EMPTY_BYTE_BUFFER,
                        timestamp,
                        1);
-                rm.apply();
+                rm.applyUnsafe();
         cfs.forceBlockingFlush();
-        rm = new RowMutation("Keyspace1", Util.dk("ttl").key);
-        rm.add("Standard1", ByteBufferUtil.bytes("col3"),
+        rm = new Mutation(KEYSPACE1, Util.dk("ttl").getKey());
+        rm.add("Standard1", Util.cellname("col3"),
                    ByteBufferUtil.EMPTY_BYTE_BUFFER,
                    timestamp,
                    1);
-        rm.apply();
+        rm.applyUnsafe();
         cfs.forceBlockingFlush();
-        rm = new RowMutation("Keyspace1", Util.dk("ttl").key);
-        rm.add("Standard1", ByteBufferUtil.bytes("col311"),
+        rm = new Mutation(KEYSPACE1, Util.dk("ttl").getKey());
+        rm.add("Standard1", Util.cellname("col311"),
                    ByteBufferUtil.EMPTY_BYTE_BUFFER,
                    timestamp,
                    1);
-        rm.apply();
+        rm.applyUnsafe();
 
         cfs.forceBlockingFlush();
         Thread.sleep(2000); // wait for ttl to expire
@@ -96,45 +103,45 @@ public class TTLExpiryTest extends SchemaLoader
     }
 
     @Test
-    public void testNoExpire() throws ExecutionException, InterruptedException
+    public void testNoExpire() throws InterruptedException
     {
-        ColumnFamilyStore cfs = Keyspace.open("Keyspace1").getColumnFamilyStore("Standard1");
+        ColumnFamilyStore cfs = Keyspace.open(KEYSPACE1).getColumnFamilyStore("Standard1");
         cfs.disableAutoCompaction();
         cfs.metadata.gcGraceSeconds(0);
         long timestamp = System.currentTimeMillis();
-        RowMutation rm = new RowMutation("Keyspace1", Util.dk("ttl").key);
-        rm.add("Standard1", ByteBufferUtil.bytes("col"),
+        Mutation rm = new Mutation(KEYSPACE1, Util.dk("ttl").getKey());
+        rm.add("Standard1", Util.cellname("col"),
                ByteBufferUtil.EMPTY_BYTE_BUFFER,
                timestamp,
                1);
-        rm.add("Standard1", ByteBufferUtil.bytes("col7"),
+        rm.add("Standard1", Util.cellname("col7"),
                ByteBufferUtil.EMPTY_BYTE_BUFFER,
                timestamp,
                1);
 
-        rm.apply();
+        rm.applyUnsafe();
         cfs.forceBlockingFlush();
 
-        rm = new RowMutation("Keyspace1", Util.dk("ttl").key);
-                rm.add("Standard1", ByteBufferUtil.bytes("col2"),
+        rm = new Mutation(KEYSPACE1, Util.dk("ttl").getKey());
+                rm.add("Standard1", Util.cellname("col2"),
                        ByteBufferUtil.EMPTY_BYTE_BUFFER,
                        timestamp,
                        1);
-                rm.apply();
+                rm.applyUnsafe();
         cfs.forceBlockingFlush();
-        rm = new RowMutation("Keyspace1", Util.dk("ttl").key);
-        rm.add("Standard1", ByteBufferUtil.bytes("col3"),
+        rm = new Mutation(KEYSPACE1, Util.dk("ttl").getKey());
+        rm.add("Standard1", Util.cellname("col3"),
                    ByteBufferUtil.EMPTY_BYTE_BUFFER,
                    timestamp,
                    1);
-        rm.apply();
+        rm.applyUnsafe();
         cfs.forceBlockingFlush();
         DecoratedKey noTTLKey = Util.dk("nottl");
-        rm = new RowMutation("Keyspace1", noTTLKey.key);
-        rm.add("Standard1", ByteBufferUtil.bytes("col311"),
+        rm = new Mutation(KEYSPACE1, noTTLKey.getKey());
+        rm.add("Standard1", Util.cellname("col311"),
                    ByteBufferUtil.EMPTY_BYTE_BUFFER,
                    timestamp);
-        rm.apply();
+        rm.applyUnsafe();
         cfs.forceBlockingFlush();
         Thread.sleep(2000); // wait for ttl to expire
         assertEquals(4, cfs.getSSTables().size());

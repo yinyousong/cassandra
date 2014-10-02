@@ -24,6 +24,7 @@ import org.apache.cassandra.cql3.*;
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.db.*;
+import org.apache.cassandra.db.composites.Composite;
 import org.apache.cassandra.exceptions.*;
 import org.apache.cassandra.utils.Pair;
 
@@ -32,9 +33,9 @@ import org.apache.cassandra.utils.Pair;
  */
 public class DeleteStatement extends ModificationStatement
 {
-    private DeleteStatement(int boundTerms, CFMetaData cfm, Attributes attrs)
+    private DeleteStatement(StatementType type, int boundTerms, CFMetaData cfm, Attributes attrs)
     {
-        super(boundTerms, cfm, attrs);
+        super(type, boundTerms, cfm, attrs);
     }
 
     public boolean requireFullClusteringKey()
@@ -42,49 +43,45 @@ public class DeleteStatement extends ModificationStatement
         return false;
     }
 
-    public ColumnFamily updateForKey(ByteBuffer key, ColumnNameBuilder builder, UpdateParameters params)
+    public void addUpdateForKey(ColumnFamily cf, ByteBuffer key, Composite prefix, UpdateParameters params)
     throws InvalidRequestException
     {
-        ColumnFamily cf = TreeMapBackedSortedColumns.factory.create(cfm);
         List<Operation> deletions = getOperations();
 
-        boolean fullKey = builder.componentCount() == cfm.clusteringColumns().size();
-        boolean isRange = cfm.isDense() ? !fullKey : (!fullKey || deletions.isEmpty());
-
-        if (!deletions.isEmpty() && isRange)
-            throw new InvalidRequestException(String.format("Missing mandatory PRIMARY KEY part %s since %s specified", getFirstEmptyKey(), deletions.get(0).columnName));
-
-        if (deletions.isEmpty() && builder.componentCount() == 0)
+        if (prefix.size() < cfm.clusteringColumns().size() && !deletions.isEmpty())
         {
-            // No columns specified, delete the row
-            cf.delete(new DeletionInfo(params.timestamp, params.localDeletionTime));
+            // In general, we can't delete specific columns if not all clustering columns have been specified.
+            // However, if we delete only static colums, it's fine since we won't really use the prefix anyway.
+            for (Operation deletion : deletions)
+                if (!deletion.column.isStatic())
+                    throw new InvalidRequestException(String.format("Missing mandatory PRIMARY KEY part %s since %s specified", getFirstEmptyKey(), deletion.column.name));
         }
-        else
+
+        if (deletions.isEmpty())
         {
-            if (isRange)
+            // We delete the slice selected by the prefix.
+            // However, for performance reasons, we distinguish 2 cases:
+            //   - It's a full internal row delete
+            //   - It's a full cell name (i.e it's a dense layout and the prefix is full)
+            if (prefix.isEmpty())
             {
-                assert deletions.isEmpty();
-                ByteBuffer start = builder.build();
-                ByteBuffer end = builder.buildAsEndOfRange();
-                cf.addAtom(params.makeRangeTombstone(start, end));
+                // No columns specified, delete the row
+                cf.delete(new DeletionInfo(params.timestamp, params.localDeletionTime));
+            }
+            else if (cfm.comparator.isDense() && prefix.size() == cfm.clusteringColumns().size())
+            {
+                cf.addAtom(params.makeTombstone(cfm.comparator.create(prefix, null)));
             }
             else
             {
-                // Delete specific columns
-                if (cfm.isDense())
-                {
-                    ByteBuffer columnName = builder.build();
-                    cf.addColumn(params.makeTombstone(columnName));
-                }
-                else
-                {
-                    for (Operation deletion : deletions)
-                        deletion.execute(key, cf, builder.copy(), params);
-                }
+                cf.addAtom(params.makeRangeTombstone(prefix.slice()));
             }
         }
-
-        return cf;
+        else
+        {
+            for (Operation op : deletions)
+                op.execute(key, cf, prefix, params);
+        }
     }
 
     public static class Parsed extends ModificationStatement.Parsed
@@ -96,16 +93,17 @@ public class DeleteStatement extends ModificationStatement
                       Attributes.Raw attrs,
                       List<Operation.RawDeletion> deletions,
                       List<Relation> whereClause,
-                      List<Pair<ColumnIdentifier, Operation.RawUpdate>> conditions)
+                      List<Pair<ColumnIdentifier, ColumnCondition.Raw>> conditions,
+                      boolean ifExists)
         {
-            super(name, attrs, conditions, false);
+            super(name, attrs, conditions, false, ifExists);
             this.deletions = deletions;
             this.whereClause = whereClause;
         }
 
         protected ModificationStatement prepareInternal(CFMetaData cfm, VariableSpecifications boundNames, Attributes attrs) throws InvalidRequestException
         {
-            DeleteStatement stmt = new DeleteStatement(boundNames.size(), cfm, attrs);
+            DeleteStatement stmt = new DeleteStatement(ModificationStatement.StatementType.DELETE, boundNames.size(), cfm, attrs);
 
             for (Operation.RawDeletion deletion : deletions)
             {
@@ -115,10 +113,10 @@ public class DeleteStatement extends ModificationStatement
 
                 // For compact, we only have one value except the key, so the only form of DELETE that make sense is without a column
                 // list. However, we support having the value name for coherence with the static/sparse case
-                if (def.kind != ColumnDefinition.Kind.REGULAR && def.kind != ColumnDefinition.Kind.COMPACT_VALUE)
+                if (def.isPrimaryKeyColumn())
                     throw new InvalidRequestException(String.format("Invalid identifier %s for deletion (should not be a PRIMARY KEY part)", def.name));
 
-                Operation op = deletion.prepare(def);
+                Operation op = deletion.prepare(cfm.ksName, def);
                 op.collectMarkerSpecification(boundNames);
                 stmt.addOperation(op);
             }

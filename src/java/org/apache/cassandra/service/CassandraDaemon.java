@@ -20,36 +20,45 @@ package org.apache.cassandra.service;
 import java.io.File;
 import java.io.IOException;
 import java.lang.management.ManagementFactory;
+import java.lang.management.MemoryPoolMXBean;
 import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.util.Arrays;
+import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import javax.management.MBeanServer;
 import javax.management.ObjectName;
 import javax.management.StandardMBean;
 
-import com.addthis.metrics.reporter.config.ReporterConfig;
-
 import com.google.common.collect.Iterables;
-import com.google.common.collect.SetMultimap;
+import com.google.common.util.concurrent.Uninterruptibles;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.addthis.metrics.reporter.config.ReporterConfig;
+import org.apache.cassandra.concurrent.JMXEnabledThreadPoolExecutor;
+import org.apache.cassandra.concurrent.Stage;
+import org.apache.cassandra.concurrent.StageManager;
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.Schema;
+import org.apache.cassandra.cql3.functions.Functions;
 import org.apache.cassandra.db.ColumnFamilyStore;
+import org.apache.cassandra.db.Directories;
 import org.apache.cassandra.db.Keyspace;
-import org.apache.cassandra.db.MeteredFlusher;
 import org.apache.cassandra.db.SystemKeyspace;
 import org.apache.cassandra.db.commitlog.CommitLog;
 import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.FSError;
+import org.apache.cassandra.io.sstable.CorruptSSTableException;
 import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.metrics.StorageMetrics;
 import org.apache.cassandra.thrift.ThriftServer;
 import org.apache.cassandra.tracing.Tracing;
 import org.apache.cassandra.utils.CLibrary;
+import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.Mx4jTool;
 import org.apache.cassandra.utils.Pair;
 
@@ -89,8 +98,16 @@ public class CassandraDaemon
      */
     protected void setup()
     {
+        try 
+        {
+            logger.info("Hostname: {}", InetAddress.getLocalHost().getHostName());
+        }
+        catch (UnknownHostException e1)
+        {
+            logger.info("Could not resolve local host");
+        }
         // log warnings for different kinds of sub-optimal JVMs.  tldr use 64-bit Oracle >= 1.6u32
-        if (!System.getProperty("os.arch").contains("64"))
+        if (!DatabaseDescriptor.hasLargeAddressSpace())
             logger.info("32bit JVM detected.  It is recommended to run Cassandra on a 64bit JVM for better performance.");
         String javaVersion = System.getProperty("java.version");
         String javaVmName = System.getProperty("java.vm.name");
@@ -123,7 +140,23 @@ public class CassandraDaemon
         }
      */
         logger.info("Heap size: {}/{}", Runtime.getRuntime().totalMemory(), Runtime.getRuntime().maxMemory());
+        for(MemoryPoolMXBean pool: ManagementFactory.getMemoryPoolMXBeans())
+            logger.info("{} {}: {}", pool.getName(), pool.getType(), pool.getPeakUsage());
         logger.info("Classpath: {}", System.getProperty("java.class.path"));
+
+        // Fail-fast if JNA is not available or failing to initialize properly
+        // except with -Dcassandra.boot_without_jna=true. See CASSANDRA-6575.
+        if (!CLibrary.jnaAvailable())
+        {
+            boolean jnaRequired = !Boolean.getBoolean("cassandra.boot_without_jna");
+
+            if (jnaRequired)
+            {
+                logger.error("JNA failing to initialize properly. Use -Dcassandra.boot_without_jna=true to bootstrap even so.");
+                System.exit(3);
+            }
+        }
+
         CLibrary.tryMlockall();
 
         Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler()
@@ -145,6 +178,13 @@ public class CassandraDaemon
                             logger.error("Exception in thread {}", t, e2);
                         FileUtils.handleFSError((FSError) e2);
                     }
+
+                    if (e2 instanceof CorruptSSTableException)
+                    {
+                        if (e2 != e)
+                            logger.error("Exception in thread " + t, e2);
+                        FileUtils.handleCorruptSSTable((CorruptSSTableException) e2);
+                    }
                 }
             }
         });
@@ -157,9 +197,24 @@ public class CassandraDaemon
         {
             logger.debug("Checking directory {}", dataDir);
             File dir = new File(dataDir);
-            if (dir.exists())
-                assert dir.isDirectory() && dir.canRead() && dir.canWrite() && dir.canExecute()
-                    : String.format("Directory %s is not accessible.", dataDir);
+
+            // check that directories exist.
+            if (!dir.exists())
+            {
+                logger.error("Directory {} doesn't exist", dataDir);
+                // if they don't, failing their creation, stop cassandra.
+                if (!dir.mkdirs())
+                {
+                    logger.error("Has no permission to create {} directory", dataDir);
+                    System.exit(3);
+                }
+            }
+            // if directories exist verify their permissions
+            if (!Directories.verifyFullPermissions(dir, dataDir))
+            {
+                // if permissions aren't sufficient, stop cassandra.
+                System.exit(3);
+            }
         }
 
         if (CacheService.instance == null) // should never happen
@@ -169,7 +224,7 @@ public class CassandraDaemon
         // we do a one-off scrub of the system keyspace first; we can't load the list of the rest of the keyspaces,
         // until system keyspace is opened.
         for (CFMetaData cfm : Schema.instance.getKeyspaceMetaData(Keyspace.SYSTEM_KS).values())
-            ColumnFamilyStore.scrubDataDirectories(Keyspace.SYSTEM_KS, cfm.cfName);
+            ColumnFamilyStore.scrubDataDirectories(cfm);
         try
         {
             SystemKeyspace.checkHealth();
@@ -180,23 +235,33 @@ public class CassandraDaemon
             System.exit(100);
         }
 
-        // load keyspace descriptions.
+        // load keyspace && function descriptions.
         DatabaseDescriptor.loadSchemas();
+        Functions.loadUDFFromSchema();
+
+        // clean up compaction leftovers
+        Map<Pair<String, String>, Map<Integer, UUID>> unfinishedCompactions = SystemKeyspace.getUnfinishedCompactions();
+        for (Pair<String, String> kscf : unfinishedCompactions.keySet())
+        {
+            CFMetaData cfm = Schema.instance.getCFMetaData(kscf.left, kscf.right);
+            // CFMetaData can be null if CF is already dropped
+            if (cfm != null)
+                ColumnFamilyStore.removeUnfinishedCompactionLeftovers(cfm, unfinishedCompactions.get(kscf));
+        }
+        SystemKeyspace.discardCompactionsInProgress();
 
         // clean up debris in the rest of the keyspaces
         for (String keyspaceName : Schema.instance.getKeyspaces())
         {
-            for (CFMetaData cfm : Schema.instance.getKeyspaceMetaData(keyspaceName).values())
-                ColumnFamilyStore.scrubDataDirectories(keyspaceName, cfm.cfName);
-        }
-        // clean up compaction leftovers
-        SetMultimap<Pair<String, String>, Integer> unfinishedCompactions = SystemKeyspace.getUnfinishedCompactions();
-        for (Pair<String, String> kscf : unfinishedCompactions.keySet())
-        {
-            ColumnFamilyStore.removeUnfinishedCompactionLeftovers(kscf.left, kscf.right, unfinishedCompactions.get(kscf));
-        }
-        SystemKeyspace.discardCompactionsInProgress();
+            // Skip system as we've already cleaned it
+            if (keyspaceName.equals(Keyspace.SYSTEM_KS))
+                continue;
 
+            for (CFMetaData cfm : Schema.instance.getKeyspaceMetaData(keyspaceName).values())
+                ColumnFamilyStore.scrubDataDirectories(cfm);
+        }
+
+        Keyspace.setInitialized();
         // initialize keyspaces
         for (String keyspaceName : Schema.instance.getKeyspaces())
         {
@@ -220,16 +285,12 @@ public class CassandraDaemon
 
         try
         {
-            GCInspector.instance.start();
+            GCInspector.register();
         }
         catch (Throwable t)
         {
             logger.warn("Unable to start GCInspector (currently only supported on the Sun JVM)");
         }
-
-        // MeteredFlusher can block if flush queue fills up, so don't put on scheduledTasks
-        // Start it before commit log, so memtables can flush during commit log replay
-        StorageService.optionalTasks.scheduleWithFixedDelay(new MeteredFlusher(), 1000, 1000, TimeUnit.MILLISECONDS);
 
         // replay the log if necessary
         try
@@ -248,7 +309,8 @@ public class CassandraDaemon
             {
                 for (final ColumnFamilyStore store : cfs.concatWithIndexes())
                 {
-                    store.enableAutoCompaction();
+                    if (store.getCompactionStrategy().shouldBeEnabled())
+                        store.enableAutoCompaction();
                 }
             }
         }
@@ -302,6 +364,9 @@ public class CassandraDaemon
             }
         }
 
+        if (!FBUtilities.getBroadcastAddress().equals(InetAddress.getLoopbackAddress()))
+            waitForGossipToSettle();
+
         // Thift
         InetAddress rpcAddr = DatabaseDescriptor.getRpcAddress();
         int rpcPort = DatabaseDescriptor.getRpcPort();
@@ -309,7 +374,7 @@ public class CassandraDaemon
         thriftServer = new ThriftServer(rpcAddr, rpcPort, listenBacklog);
 
         // Native transport
-        InetAddress nativeAddr = DatabaseDescriptor.getNativeTransportAddress();
+        InetAddress nativeAddr = DatabaseDescriptor.getRpcAddress();
         int nativePort = DatabaseDescriptor.getNativeTransportPort();
         nativeServer = new org.apache.cassandra.transport.Server(nativeAddr, nativePort);
     }
@@ -425,6 +490,52 @@ public class CassandraDaemon
     {
         stop();
         destroy();
+    }
+
+    private void waitForGossipToSettle()
+    {
+        int forceAfter = Integer.getInteger("cassandra.skip_wait_for_gossip_to_settle", -1);
+        if (forceAfter == 0)
+        {
+            return;
+        }
+        final int GOSSIP_SETTLE_MIN_WAIT_MS = 5000;
+        final int GOSSIP_SETTLE_POLL_INTERVAL_MS = 1000;
+        final int GOSSIP_SETTLE_POLL_SUCCESSES_REQUIRED = 3;
+
+        logger.info("Waiting for gossip to settle before accepting client requests...");
+        Uninterruptibles.sleepUninterruptibly(GOSSIP_SETTLE_MIN_WAIT_MS, TimeUnit.MILLISECONDS);
+        int totalPolls = 0;
+        int numOkay = 0;
+        JMXEnabledThreadPoolExecutor gossipStage = (JMXEnabledThreadPoolExecutor)StageManager.getStage(Stage.GOSSIP);
+        while (numOkay < GOSSIP_SETTLE_POLL_SUCCESSES_REQUIRED)
+        {
+            Uninterruptibles.sleepUninterruptibly(GOSSIP_SETTLE_POLL_INTERVAL_MS, TimeUnit.MILLISECONDS);
+            long completed = gossipStage.getCompletedTasks();
+            long active = gossipStage.getActiveCount();
+            long pending = gossipStage.getPendingTasks();
+            totalPolls++;
+            if (active == 0 && pending == 0)
+            {
+                logger.debug("Gossip looks settled. CompletedTasks: {}", completed);
+                numOkay++;
+            }
+            else
+            {
+                logger.info("Gossip not settled after {} polls. Gossip Stage active/pending/completed: {}/{}/{}", totalPolls, active, pending, completed);
+                numOkay = 0;
+            }
+            if (forceAfter > 0 && totalPolls > forceAfter)
+            {
+                logger.warn("Gossip not settled but startup forced by cassandra.skip_wait_for_gossip_to_settle. Gossip Stage total/active/pending/completed: {}/{}/{}/{}",
+                            totalPolls, active, pending, completed);
+                break;
+            }
+        }
+        if (totalPolls > GOSSIP_SETTLE_POLL_SUCCESSES_REQUIRED)
+            logger.info("Gossip settled after {} extra polls; proceeding", totalPolls - GOSSIP_SETTLE_POLL_SUCCESSES_REQUIRED);
+        else
+            logger.info("No gossip backlog; proceeding");
     }
 
     public static void stop(String[] args)

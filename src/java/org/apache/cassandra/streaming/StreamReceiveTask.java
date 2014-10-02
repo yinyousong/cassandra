@@ -19,12 +19,18 @@ package org.apache.cassandra.streaming;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
+import org.apache.cassandra.concurrent.DebuggableThreadPoolExecutor;
 import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.io.sstable.SSTableReader;
+import org.apache.cassandra.io.sstable.SSTableWriter;
+import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.Pair;
 
 /**
@@ -32,20 +38,27 @@ import org.apache.cassandra.utils.Pair;
  */
 public class StreamReceiveTask extends StreamTask
 {
+    private static final ThreadPoolExecutor executor = DebuggableThreadPoolExecutor.createWithMaximumPoolSize("StreamReceiveTask",
+                                                                                                              FBUtilities.getAvailableProcessors(),
+                                                                                                              60, TimeUnit.SECONDS);
+
     // number of files to receive
     private final int totalFiles;
     // total size of files to receive
     private final long totalSize;
 
+    // true if task is done (either completed or aborted)
+    private boolean done = false;
+
     //  holds references to SSTables received
-    protected Collection<SSTableReader> sstables;
+    protected Collection<SSTableWriter> sstables;
 
     public StreamReceiveTask(StreamSession session, UUID cfId, int totalFiles, long totalSize)
     {
         super(session, cfId);
         this.totalFiles = totalFiles;
         this.totalSize = totalSize;
-        this.sstables =  new ArrayList<>(totalFiles);
+        this.sstables = new ArrayList<>(totalFiles);
     }
 
     /**
@@ -53,13 +66,19 @@ public class StreamReceiveTask extends StreamTask
      *
      * @param sstable SSTable file received.
      */
-    public void received(SSTableReader sstable)
+    public synchronized void received(SSTableWriter sstable)
     {
+        if (done)
+            return;
+
         assert cfId.equals(sstable.metadata.cfId);
 
         sstables.add(sstable);
         if (sstables.size() == totalFiles)
-            complete();
+        {
+            done = true;
+            executor.submit(new OnCompletionRunnable(this));
+        }
     }
 
     public int getTotalNumberOfFiles()
@@ -72,24 +91,67 @@ public class StreamReceiveTask extends StreamTask
         return totalSize;
     }
 
-    // TODO should be run in background so that this does not block streaming
-    private void complete()
+    private static class OnCompletionRunnable implements Runnable
     {
-        if (!SSTableReader.acquireReferences(sstables))
-            throw new AssertionError("We shouldn't fail acquiring a reference on a sstable that has just been transferred");
-        try
+        private final StreamReceiveTask task;
+
+        public OnCompletionRunnable(StreamReceiveTask task)
         {
-            Pair<String, String> kscf = Schema.instance.getCF(cfId);
-            ColumnFamilyStore cfs = Keyspace.open(kscf.left).getColumnFamilyStore(kscf.right);
-            // add sstables and build secondary indexes
-            cfs.addSSTables(sstables);
-            cfs.indexManager.maybeBuildSecondaryIndexes(sstables, cfs.indexManager.allIndexesNames());
-        }
-        finally
-        {
-            SSTableReader.releaseReferences(sstables);
+            this.task = task;
         }
 
-        session.taskCompleted(this);
+        public void run()
+        {
+            Pair<String, String> kscf = Schema.instance.getCF(task.cfId);
+            if (kscf == null)
+            {
+                // schema was dropped during streaming
+                for (SSTableWriter writer : task.sstables)
+                    writer.abort();
+                task.sstables.clear();
+                return;
+            }
+            ColumnFamilyStore cfs = Keyspace.open(kscf.left).getColumnFamilyStore(kscf.right);
+
+            StreamLockfile lockfile = new StreamLockfile(cfs.directories.getWriteableLocationAsFile(), UUID.randomUUID());
+            lockfile.create(task.sstables);
+            List<SSTableReader> readers = new ArrayList<>();
+            for (SSTableWriter writer : task.sstables)
+                readers.add(writer.closeAndOpenReader());
+            lockfile.delete();
+            task.sstables.clear();
+
+            if (!SSTableReader.acquireReferences(readers))
+                throw new AssertionError("We shouldn't fail acquiring a reference on a sstable that has just been transferred");
+            try
+            {
+                // add sstables and build secondary indexes
+                cfs.addSSTables(readers);
+                cfs.indexManager.maybeBuildSecondaryIndexes(readers, cfs.indexManager.allIndexesNames());
+            }
+            finally
+            {
+                SSTableReader.releaseReferences(readers);
+            }
+
+            task.session.taskCompleted(task);
+        }
+    }
+
+    /**
+     * Abort this task.
+     * If the task already received all files and
+     * {@link org.apache.cassandra.streaming.StreamReceiveTask.OnCompletionRunnable} task is submitted,
+     * then task cannot be aborted.
+     */
+    public synchronized void abort()
+    {
+        if (done)
+            return;
+
+        done = true;
+        for (SSTableWriter writer : sstables)
+            writer.abort();
+        sstables.clear();
     }
 }

@@ -19,7 +19,7 @@ contrib/word_count$ bin/word_count_setup
 contrib/word_count$ bin/word_count
 contrib/word_count$ bin/word_count_counters
 
-In order to view the results in Cassandra, one can use bin/cassandra-cli and
+In order to view the results in Cassandra, one can use bin/cqlsh and
 perform the following operations:
 $ bin/cqlsh localhost
 > use cql3_worldcount;
@@ -36,8 +36,10 @@ Read the code in src/ for more details.
 The word_count_counters example sums the counter columns for a row. The output
 is written to a text file in /tmp/word_count_counters.
 
-*If you want to point wordcount at a real cluster, modify the seed
-and listenaddress settings accordingly.
+*It is recommended to turn off vnodes when running Cassandra with hadoop. 
+This is done by setting "num_tokens: 1" in cassandra.yaml. If you want to
+point wordcount at a real cluster, modify the seed and listenaddress 
+settings accordingly.
 
 
 Troubleshooting

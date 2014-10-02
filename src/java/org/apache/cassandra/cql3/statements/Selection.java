@@ -19,6 +19,7 @@ package org.apache.cassandra.cql3.statements;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 
 import com.google.common.collect.Iterators;
@@ -28,9 +29,9 @@ import org.apache.cassandra.cql3.functions.Function;
 import org.apache.cassandra.cql3.functions.Functions;
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.ColumnDefinition;
-import org.apache.cassandra.db.CounterColumn;
-import org.apache.cassandra.db.ExpiringColumn;
-import org.apache.cassandra.db.Column;
+import org.apache.cassandra.db.Cell;
+import org.apache.cassandra.db.CounterCell;
+import org.apache.cassandra.db.ExpiringCell;
 import org.apache.cassandra.db.context.CounterContext;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.db.marshal.Int32Type;
@@ -42,34 +43,47 @@ import org.apache.cassandra.utils.ByteBufferUtil;
 
 public abstract class Selection
 {
-    private final List<ColumnDefinition> columnsList;
-    private final List<ColumnSpecification> metadata;
+    private final Collection<ColumnDefinition> columns;
+    private final ResultSet.Metadata metadata;
     private final boolean collectTimestamps;
     private final boolean collectTTLs;
 
-    protected Selection(List<ColumnDefinition> columnsList, List<ColumnSpecification> metadata, boolean collectTimestamps, boolean collectTTLs)
+    protected Selection(Collection<ColumnDefinition> columns, List<ColumnSpecification> metadata, boolean collectTimestamps, boolean collectTTLs)
     {
-        this.columnsList = columnsList;
-        this.metadata = metadata;
+        this.columns = columns;
+        this.metadata = new ResultSet.Metadata(metadata);
         this.collectTimestamps = collectTimestamps;
         this.collectTTLs = collectTTLs;
     }
 
+    // Overriden by SimpleSelection when appropriate.
+    public boolean isWildcard()
+    {
+        return false;
+    }
+
     public ResultSet.Metadata getResultMetadata()
     {
-        return new ResultSet.Metadata(metadata);
+        return metadata;
     }
 
     public static Selection wildcard(CFMetaData cfm)
     {
         List<ColumnDefinition> all = new ArrayList<ColumnDefinition>(cfm.allColumns().size());
         Iterators.addAll(all, cfm.allColumnsInSelectOrder());
-        return new SimpleSelection(all);
+        return new SimpleSelection(all, true);
     }
 
-    public static Selection forColumns(List<ColumnDefinition> columnsList)
+    public static Selection forColumns(Collection<ColumnDefinition> columns)
     {
-        return new SimpleSelection(columnsList);
+        return new SimpleSelection(columns, false);
+    }
+
+    public int addColumnForOrdering(ColumnDefinition c)
+    {
+        columns.add(c);
+        metadata.addNonSerializedColumn(c);
+        return columns.size() - 1;
     }
 
     private static boolean isUsingFunction(List<RawSelector> rawSelectors)
@@ -110,7 +124,7 @@ public abstract class Selection
             ColumnDefinition def = cfm.getColumnDefinition(tot.id);
             if (def == null)
                 throw new InvalidRequestException(String.format("Undefined name %s in selection clause", tot.id));
-            if (def.kind != ColumnDefinition.Kind.REGULAR && def.kind != ColumnDefinition.Kind.COMPACT_VALUE)
+            if (def.isPrimaryKeyColumn())
                 throw new InvalidRequestException(String.format("Cannot use selection function %s on PRIMARY KEY part %s", tot.isWritetime ? "writeTime" : "ttl", def.name));
             if (def.type.isCollection())
                 throw new InvalidRequestException(String.format("Cannot use selection function %s on collections", tot.isWritetime ? "writeTime" : "ttl"));
@@ -128,13 +142,13 @@ public abstract class Selection
                 throw new InvalidRequestException(String.format("Invalid field selection: %s of type %s is not a user type", withField.selected, type.asCQL3Type()));
 
             UserType ut = (UserType)type;
-            for (int i = 0; i < ut.types.size(); i++)
+            for (int i = 0; i < ut.size(); i++)
             {
-                if (!ut.columnNames.get(i).equals(withField.field.bytes))
+                if (!ut.fieldName(i).equals(withField.field.bytes))
                     continue;
 
                 if (metadata != null)
-                    metadata.add(makeFieldSelectSpec(cfm, withField, ut.types.get(i), raw.alias));
+                    metadata.add(makeFieldSelectSpec(cfm, withField, ut.fieldType(i), raw.alias));
                 return new FieldSelector(ut, i, selected);
             }
             throw new InvalidRequestException(String.format("%s of type %s has no field %s", withField.selected, type.asCQL3Type(), withField.field));
@@ -142,17 +156,16 @@ public abstract class Selection
         else
         {
             Selectable.WithFunction withFun = (Selectable.WithFunction)raw.selectable;
-            List<Selector> args = new ArrayList<Selector>(withFun.args.size());
+            List<Selector> args = new ArrayList<>(withFun.args.size());
             for (Selectable rawArg : withFun.args)
                 args.add(makeSelector(cfm, new RawSelector(rawArg, null), defs, null));
 
-            AbstractType<?> returnType = Functions.getReturnType(withFun.functionName, cfm.ksName, cfm.cfName);
-            if (returnType == null)
+            // resolve built-in functions before user defined functions
+            Function fun = Functions.get(cfm.ksName, withFun.functionName, args, cfm.ksName, cfm.cfName);
+            if (fun == null)
                 throw new InvalidRequestException(String.format("Unknown function '%s'", withFun.functionName));
-            ColumnSpecification spec = makeFunctionSpec(cfm, withFun, returnType, raw.alias);
-            Function fun = Functions.get(withFun.functionName, args, spec);
             if (metadata != null)
-                metadata.add(spec);
+                metadata.add(makeFunctionSpec(cfm, withFun, fun.returnType(), raw.alias));
             return new FunctionSelector(fun, args);
         }
     }
@@ -228,32 +241,18 @@ public abstract class Selection
                 defs.add(def);
                 metadata.add(rawSelector.alias == null ? def : makeAliasSpec(cfm, def.type, rawSelector.alias));
             }
-            return new SimpleSelection(defs, metadata);
+            return new SimpleSelection(defs, metadata, false);
         }
     }
 
     protected abstract List<ByteBuffer> handleRow(ResultSetBuilder rs) throws InvalidRequestException;
 
     /**
-     * @return the list of CQL3 "regular" (the "COLUMN_METADATA" ones) column names to fetch.
-     */
-    public List<ColumnIdentifier> regularColumnsToFetch()
-    {
-        List<ColumnIdentifier> toFetch = new ArrayList<ColumnIdentifier>();
-        for (ColumnDefinition def : columnsList)
-        {
-            if (def.kind == ColumnDefinition.Kind.REGULAR)
-                toFetch.add(def.name);
-        }
-        return toFetch;
-    }
-
-    /**
      * @return the list of CQL3 columns value this SelectionClause needs.
      */
-    public List<ColumnDefinition> getColumnsList()
+    public Collection<ColumnDefinition> getColumns()
     {
-        return columnsList;
+        return columns;
     }
 
     public ResultSetBuilder resultSetBuilder(long now)
@@ -261,9 +260,9 @@ public abstract class Selection
         return new ResultSetBuilder(now);
     }
 
-    private static ByteBuffer value(Column c)
+    private static ByteBuffer value(Cell c)
     {
-        return (c instanceof CounterColumn)
+        return (c instanceof CounterCell)
             ? ByteBufferUtil.bytes(CounterContext.instance().total(c.value()))
             : c.value();
     }
@@ -287,9 +286,9 @@ public abstract class Selection
 
         private ResultSetBuilder(long now)
         {
-            this.resultSet = new ResultSet(metadata);
-            this.timestamps = collectTimestamps ? new long[columnsList.size()] : null;
-            this.ttls = collectTTLs ? new int[columnsList.size()] : null;
+            this.resultSet = new ResultSet(getResultMetadata(), new ArrayList<List<ByteBuffer>>());
+            this.timestamps = collectTimestamps ? new long[columns.size()] : null;
+            this.ttls = collectTTLs ? new int[columns.size()] : null;
             this.now = now;
         }
 
@@ -298,7 +297,7 @@ public abstract class Selection
             current.add(v);
         }
 
-        public void add(Column c)
+        public void add(Cell c)
         {
             current.add(isDead(c) ? null : value(c));
             if (timestamps != null)
@@ -308,22 +307,22 @@ public abstract class Selection
             if (ttls != null)
             {
                 int ttl = -1;
-                if (!isDead(c) && c instanceof ExpiringColumn)
+                if (!isDead(c) && c instanceof ExpiringCell)
                     ttl = c.getLocalDeletionTime() - (int) (now / 1000);
                 ttls[current.size() - 1] = ttl;
             }
         }
 
-        private boolean isDead(Column c)
+        private boolean isDead(Cell c)
         {
-            return c == null || c.isMarkedForDelete(now);
+            return c == null || !c.isLive(now);
         }
 
         public void newRow() throws InvalidRequestException
         {
             if (current != null)
                 resultSet.addRow(handleRow(this));
-            current = new ArrayList<ByteBuffer>(columnsList.size());
+            current = new ArrayList<ByteBuffer>(columns.size());
         }
 
         public ResultSet build() throws InvalidRequestException
@@ -340,35 +339,49 @@ public abstract class Selection
     // Special cased selection for when no function is used (this save some allocations).
     private static class SimpleSelection extends Selection
     {
-        public SimpleSelection(List<ColumnDefinition> columnsList)
+        private final boolean isWildcard;
+
+        public SimpleSelection(Collection<ColumnDefinition> columns, boolean isWildcard)
         {
-            this(columnsList, new ArrayList<ColumnSpecification>(columnsList));
+            this(columns, new ArrayList<ColumnSpecification>(columns), isWildcard);
         }
 
-        public SimpleSelection(List<ColumnDefinition> columnsList, List<ColumnSpecification> metadata)
+        public SimpleSelection(Collection<ColumnDefinition> columns, List<ColumnSpecification> metadata, boolean isWildcard)
         {
             /*
              * In theory, even a simple selection could have multiple time the same column, so we
-             * could filter those duplicate out of columnsList. But since we're very unlikely to
+             * could filter those duplicate out of columns. But since we're very unlikely to
              * get much duplicate in practice, it's more efficient not to bother.
              */
-            super(columnsList, metadata, false, false);
+            super(columns, metadata, false, false);
+            this.isWildcard = isWildcard;
         }
 
         protected List<ByteBuffer> handleRow(ResultSetBuilder rs)
         {
             return rs.current;
         }
+
+        @Override
+        public boolean isWildcard()
+        {
+            return isWildcard;
+        }
     }
 
-    private static abstract class Selector implements AssignementTestable
+    private static abstract class Selector implements AssignmentTestable
     {
         public abstract ByteBuffer compute(ResultSetBuilder rs) throws InvalidRequestException;
         public abstract AbstractType<?> getType();
 
-        public boolean isAssignableTo(ColumnSpecification receiver)
+        public AssignmentTestable.TestResult testAssignment(String keyspace, ColumnSpecification receiver)
         {
-            return getType().asCQL3Type().equals(receiver.type.asCQL3Type());
+            if (receiver.type.equals(getType()))
+                return AssignmentTestable.TestResult.EXACT_MATCH;
+            else if (receiver.type.isValueCompatibleWith(getType()))
+                return AssignmentTestable.TestResult.WEAKLY_ASSIGNABLE;
+            else
+                return AssignmentTestable.TestResult.NOT_ASSIGNABLE;
         }
     }
 
@@ -457,19 +470,22 @@ public abstract class Selection
 
         public ByteBuffer compute(ResultSetBuilder rs) throws InvalidRequestException
         {
-            ByteBuffer[] buffers = type.split(selected.compute(rs));
+            ByteBuffer value = selected.compute(rs);
+            if (value == null)
+                return null;
+            ByteBuffer[] buffers = type.split(value);
             return field < buffers.length ? buffers[field] : null;
         }
 
         public AbstractType<?> getType()
         {
-            return type.types.get(field);
+            return type.fieldType(field);
         }
 
         @Override
         public String toString()
         {
-            return String.format("%s.%s", selected, UTF8Type.instance.getString(type.columnNames.get(field)));
+            return String.format("%s.%s", selected, UTF8Type.instance.getString(type.fieldName(field)));
         }
     }
 
@@ -514,9 +530,9 @@ public abstract class Selection
     {
         private final List<Selector> selectors;
 
-        public SelectionWithFunctions(List<ColumnDefinition> columnsList, List<ColumnSpecification> metadata, List<Selector> selectors, boolean collectTimestamps, boolean collectTTLs)
+        public SelectionWithFunctions(Collection<ColumnDefinition> columns, List<ColumnSpecification> metadata, List<Selector> selectors, boolean collectTimestamps, boolean collectTTLs)
         {
-            super(columnsList, metadata, collectTimestamps, collectTTLs);
+            super(columns, metadata, collectTimestamps, collectTTLs);
             this.selectors = selectors;
         }
 

@@ -30,6 +30,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.db.BufferDecoratedKey;
 import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.db.RowIndexEntry;
 import org.apache.cassandra.dht.IPartitioner;
@@ -37,7 +38,7 @@ import org.apache.cassandra.io.FSWriteError;
 import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.io.util.RandomAccessReader;
 import org.apache.cassandra.utils.ByteBufferUtil;
-import org.apache.cassandra.utils.HeapAllocator;
+import org.apache.cassandra.utils.memory.HeapAllocator;
 import org.apache.cassandra.utils.Pair;
 
 /**
@@ -55,8 +56,6 @@ import org.apache.cassandra.utils.Pair;
 public abstract class SSTable
 {
     static final Logger logger = LoggerFactory.getLogger(SSTable.class);
-
-    public static final String TEMPFILE_MARKER = "tmp";
 
     public static final int TOMBSTONE_HISTOGRAM_BIN_SIZE = 100;
 
@@ -125,8 +124,8 @@ public abstract class SSTable
      */
     public static DecoratedKey getMinimalKey(DecoratedKey key)
     {
-        return key.key.position() > 0 || key.key.hasRemaining()
-                                       ? new DecoratedKey(key.token, HeapAllocator.instance.clone(key.key))
+        return key.getKey().position() > 0 || key.getKey().hasRemaining() || !key.getKey().hasArray()
+                                       ? new BufferDecoratedKey(key.getToken(), HeapAllocator.instance.clone(key.getKey()))
                                        : key;
     }
 
@@ -151,18 +150,17 @@ public abstract class SSTable
     }
 
     /**
-     * @return A Descriptor,Component pair. If component is of unknown type, returns CUSTOM component.
+     * @return Descriptor and Component pair. null if given file is not acceptable as SSTable component.
+     *         If component is of unknown type, returns CUSTOM component.
      */
-    public static Pair<Descriptor,Component> tryComponentFromFilename(File dir, String name)
+    public static Pair<Descriptor, Component> tryComponentFromFilename(File dir, String name)
     {
         try
         {
             return Component.fromFilename(dir, name);
         }
-        catch (NoSuchElementException e)
+        catch (Throwable e)
         {
-            // A NoSuchElementException is thrown if the name does not match the Descriptor format
-            // This is the less impacting change (all calls to this method test for null return)
             return null;
         }
     }
@@ -170,7 +168,7 @@ public abstract class SSTable
     /**
      * Discovers existing components for the descriptor. Slow: only intended for use outside the critical path.
      */
-    static Set<Component> componentsFor(final Descriptor desc)
+    public static Set<Component> componentsFor(final Descriptor desc)
     {
         try
         {
@@ -218,7 +216,7 @@ public abstract class SSTable
         while (ifile.getFilePointer() < BYTES_CAP && keys < SAMPLES_CAP)
         {
             ByteBufferUtil.skipShortLength(ifile);
-            RowIndexEntry.serializer.skip(ifile);
+            RowIndexEntry.Serializer.skip(ifile);
             keys++;
         }
         assert keys > 0 && ifile.getFilePointer() > 0 && ifile.length() > 0 : "Unexpected empty index file: " + ifile;

@@ -17,8 +17,18 @@
  */
 package org.apache.cassandra.config;
 
+import java.io.IOException;
+import java.io.StringReader;
+import java.util.List;
+import java.util.Set;
+
+import com.google.common.collect.Sets;
+import org.supercsv.io.CsvListReader;
+import org.supercsv.prefs.CsvPreference;
+
 import org.apache.cassandra.config.EncryptionOptions.ClientEncryptionOptions;
 import org.apache.cassandra.config.EncryptionOptions.ServerEncryptionOptions;
+import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.util.NativeAllocator;
 import org.apache.cassandra.utils.FBUtilities;
 
@@ -38,51 +48,64 @@ public class Config
     public String partitioner;
 
     public Boolean auto_bootstrap = true;
-    public volatile Boolean hinted_handoff_enabled = true;
+    public volatile boolean hinted_handoff_enabled_global = true;
+    public String hinted_handoff_enabled;
+    public Set<String> hinted_handoff_enabled_by_dc = Sets.newConcurrentHashSet();
     public volatile Integer max_hint_window_in_ms = 3600 * 1000; // one hour
 
     public SeedProviderDef seed_provider;
     public DiskAccessMode disk_access_mode = DiskAccessMode.auto;
 
     public DiskFailurePolicy disk_failure_policy = DiskFailurePolicy.ignore;
+    public CommitFailurePolicy commit_failure_policy = CommitFailurePolicy.stop;
 
     /* initial token in the ring */
     public String initial_token;
     public Integer num_tokens = 1;
 
-    public volatile Long request_timeout_in_ms = new Long(10000);
+    public volatile Long request_timeout_in_ms = 10000L;
 
-    public Long read_request_timeout_in_ms = new Long(5000);
+    public volatile Long read_request_timeout_in_ms = 5000L;
 
-    public Long range_request_timeout_in_ms = new Long(10000);
+    public volatile Long range_request_timeout_in_ms = 10000L;
 
-    public Long write_request_timeout_in_ms = new Long(2000);
+    public volatile Long write_request_timeout_in_ms = 2000L;
 
-    public Long cas_contention_timeout_in_ms = new Long(1000);
+    public volatile Long counter_write_request_timeout_in_ms = 5000L;
 
-    public Long truncate_request_timeout_in_ms = new Long(60000);
+    public volatile Long cas_contention_timeout_in_ms = 1000L;
 
-    public Integer streaming_socket_timeout_in_ms = new Integer(0);
+    public volatile Long truncate_request_timeout_in_ms = 60000L;
+
+    public Integer streaming_socket_timeout_in_ms = 0;
 
     public boolean cross_node_timeout = false;
 
     public volatile Double phi_convict_threshold = 8.0;
 
-    public Integer concurrent_reads = 8;
+    public Integer concurrent_reads = 32;
     public Integer concurrent_writes = 32;
-    public Integer concurrent_replicates = 32;
+    public Integer concurrent_counter_writes = 32;
 
-    public Integer memtable_flush_writers = null; // will get set to the length of data dirs in DatabaseDescriptor
-    public Integer memtable_total_space_in_mb;
+    @Deprecated
+    public Integer concurrent_replicates = null;
+
+    public Integer memtable_flush_writers = null;
+    public Integer memtable_heap_space_in_mb;
+    public Integer memtable_offheap_space_in_mb;
+    public Float memtable_cleanup_threshold = null;
 
     public Integer storage_port = 7000;
     public Integer ssl_storage_port = 7001;
     public String listen_address;
+    public String listen_interface;
     public String broadcast_address;
     public String internode_authenticator;
 
     public Boolean start_rpc = true;
     public String rpc_address;
+    public String rpc_interface;
+    public String broadcast_rpc_address;
     public Integer rpc_port = 9160;
     public Integer rpc_listen_backlog = 50;
     public String rpc_server_type = "sync";
@@ -108,13 +131,15 @@ public class Config
 
     /* if the size of columns or super-columns are more than this, indexing will kick in */
     public Integer column_index_size_in_kb = 64;
-    public Integer in_memory_compaction_limit_in_mb = 64;
-    public Integer concurrent_compactors = FBUtilities.getAvailableProcessors();
+    public Integer batch_size_warn_threshold_in_kb = 5;
+    public volatile Integer batch_size_fail_threshold_in_kb = 50;
+    public Integer concurrent_compactors;
     public volatile Integer compaction_throughput_mb_per_sec = 16;
 
     public Integer max_streaming_retries = 3;
 
     public volatile Integer stream_throughput_outbound_megabits_per_sec = 200;
+    public volatile Integer inter_dc_stream_throughput_outbound_megabits_per_sec = 0;
 
     public String[] data_file_directories;
 
@@ -150,38 +175,46 @@ public class Config
     public Integer index_interval = null;
 
     public int hinted_handoff_throttle_in_kb = 1024;
+    public int batchlog_replay_throttle_in_kb = 1024;
     public int max_hints_delivery_threads = 1;
-    public boolean compaction_preheat_key_cache = true;
+    public int sstable_preemptive_open_interval_in_mb = 50;
 
     public volatile boolean incremental_backups = false;
-    public int memtable_flush_queue_size = 4;
     public boolean trickle_fsync = false;
     public int trickle_fsync_interval_in_kb = 10240;
 
     public Long key_cache_size_in_mb = null;
     public volatile int key_cache_save_period = 14400;
-    public int key_cache_keys_to_save = Integer.MAX_VALUE;
+    public volatile int key_cache_keys_to_save = Integer.MAX_VALUE;
 
     public long row_cache_size_in_mb = 0;
     public volatile int row_cache_save_period = 0;
-    public int row_cache_keys_to_save = Integer.MAX_VALUE;
+    public volatile int row_cache_keys_to_save = Integer.MAX_VALUE;
+
+    public Long counter_cache_size_in_mb = null;
+    public volatile int counter_cache_save_period = 7200;
+    public volatile int counter_cache_keys_to_save = Integer.MAX_VALUE;
+
     public String memory_allocator = NativeAllocator.class.getSimpleName();
-    public boolean populate_io_cache_on_flush = false;
 
     private static boolean isClientMode = false;
-
-    public boolean preheat_kernel_page_cache = false;
 
     public Integer file_cache_size_in_mb;
 
     public boolean inter_dc_tcp_nodelay = true;
 
-    public String memtable_allocator = "SlabAllocator";
+    public MemtableAllocationType memtable_allocation_type = MemtableAllocationType.heap_buffers;
 
     private static boolean outboundBindAny = false;
 
     public volatile int tombstone_warn_threshold = 1000;
     public volatile int tombstone_failure_threshold = 100000;
+
+    public volatile Long index_summary_capacity_in_mb;
+    public volatile int index_summary_resize_interval_in_minutes = 60;
+
+    private static final CsvPreference STANDARD_SURROUNDING_SPACES_NEED_QUOTES = new CsvPreference.Builder(CsvPreference.STANDARD_PREFERENCE)
+                                                                                                  .surroundingSpacesNeedQuotes(true).build();
 
     public static boolean getOutboundBindAny()
     {
@@ -203,12 +236,45 @@ public class Config
         isClientMode = clientMode;
     }
 
+    public void configHintedHandoff() throws ConfigurationException
+    {
+        if (hinted_handoff_enabled != null && !hinted_handoff_enabled.isEmpty())
+        {
+            if (hinted_handoff_enabled.equalsIgnoreCase("true"))
+            {
+                hinted_handoff_enabled_global = true;
+            }
+            else if (hinted_handoff_enabled.equalsIgnoreCase("false"))
+            {
+                hinted_handoff_enabled_global = false;
+            }
+            else
+            {
+                try
+                {
+                    hinted_handoff_enabled_by_dc.addAll(parseHintedHandoffEnabledDCs(hinted_handoff_enabled));
+                }
+                catch (IOException e)
+                {
+                    throw new ConfigurationException("Invalid hinted_handoff_enabled parameter " + hinted_handoff_enabled, e);
+                }
+            }
+        }
+    }
+
+    public static List<String> parseHintedHandoffEnabledDCs(final String dcNames) throws IOException
+    {
+        try (final CsvListReader csvListReader = new CsvListReader(new StringReader(dcNames), STANDARD_SURROUNDING_SPACES_NEED_QUOTES))
+        {
+        	return csvListReader.read();
+        }
+    }
+
     public static enum CommitLogSync
     {
         periodic,
         batch
     }
-
     public static enum InternodeCompression
     {
         all, none, dc
@@ -222,10 +288,26 @@ public class Config
         standard,
     }
 
+    public static enum MemtableAllocationType
+    {
+        unslabbed_heap_buffers,
+        heap_buffers,
+        offheap_buffers,
+        offheap_objects
+    }
+
     public static enum DiskFailurePolicy
     {
         best_effort,
         stop,
+        ignore,
+        stop_paranoid,
+    }
+
+    public static enum CommitFailurePolicy
+    {
+        stop,
+        stop_commit,
         ignore,
     }
 

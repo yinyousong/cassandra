@@ -20,22 +20,40 @@
 package org.apache.cassandra.io.sstable;
 
 import java.io.File;
-import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 
-import org.apache.cassandra.SchemaLoader;
-import org.apache.cassandra.db.DecoratedKey;
-import org.apache.cassandra.db.columniterator.SSTableNamesIterator;
-import org.apache.cassandra.utils.FBUtilities;
-import org.apache.cassandra.utils.ByteBufferUtil;
 import org.junit.BeforeClass;
 import org.junit.Test;
+
+import org.apache.cassandra.SchemaLoader;
+import org.apache.cassandra.Util;
+import org.apache.cassandra.config.KSMetaData;
+import org.apache.cassandra.db.ColumnFamily;
+import org.apache.cassandra.db.ColumnFamilyStore;
+import org.apache.cassandra.db.DecoratedKey;
+import org.apache.cassandra.db.DeletionInfo;
+import org.apache.cassandra.db.Keyspace;
+import org.apache.cassandra.db.columniterator.SSTableNamesIterator;
+import org.apache.cassandra.db.composites.CellNameType;
+import org.apache.cassandra.dht.IPartitioner;
+import org.apache.cassandra.dht.Range;
+import org.apache.cassandra.dht.Token;
+import org.apache.cassandra.exceptions.ConfigurationException;
+import org.apache.cassandra.locator.SimpleStrategy;
+import org.apache.cassandra.service.StorageService;
+import org.apache.cassandra.streaming.StreamPlan;
+import org.apache.cassandra.streaming.StreamSession;
+import org.apache.cassandra.utils.ByteBufferUtil;
+import org.apache.cassandra.utils.FBUtilities;
 
 /**
  * Tests backwards compatibility for SSTables
  */
-public class LegacySSTableTest extends SchemaLoader
+public class LegacySSTableTest
 {
     public static final String LEGACY_SSTABLE_PROP = "legacy-sstable-root";
     public static final String KSNAME = "Keyspace1";
@@ -45,8 +63,19 @@ public class LegacySSTableTest extends SchemaLoader
     public static File LEGACY_SSTABLE_ROOT;
 
     @BeforeClass
+    public static void defineSchema() throws ConfigurationException
+    {
+        SchemaLoader.prepareServer();
+        SchemaLoader.createKeyspace(KSNAME,
+                                    SimpleStrategy.class,
+                                    KSMetaData.optsWithRF(1),
+                                    SchemaLoader.standardCFMD(KSNAME, CFNAME));
+        beforeClass();
+    }
+
     public static void beforeClass()
     {
+        Keyspace.setInitialized();
         String scp = System.getProperty(LEGACY_SSTABLE_PROP);
         assert scp != null;
         LEGACY_SSTABLE_ROOT = new File(scp).getAbsoluteFile();
@@ -60,10 +89,10 @@ public class LegacySSTableTest extends SchemaLoader
     /**
      * Get a descriptor for the legacy sstable at the given version.
      */
-    protected Descriptor getDescriptor(String ver) throws IOException
+    protected Descriptor getDescriptor(String ver)
     {
         File directory = new File(LEGACY_SSTABLE_ROOT + File.separator + ver + File.separator + KSNAME);
-        return new Descriptor(ver, directory, KSNAME, CFNAME, 0, false);
+        return new Descriptor(ver, directory, KSNAME, CFNAME, 0, Descriptor.Type.FINAL);
     }
 
     /**
@@ -85,11 +114,60 @@ public class LegacySSTableTest extends SchemaLoader
     */
 
     @Test
+    public void testStreaming() throws Throwable
+    {
+        StorageService.instance.initServer();
+
+        for (File version : LEGACY_SSTABLE_ROOT.listFiles())
+            if (Descriptor.Version.validate(version.getName()) && new Descriptor.Version(version.getName()).isCompatible())
+                testStreaming(version.getName());
+    }
+
+    private void testStreaming(String version) throws Exception
+    {
+        SSTableReader sstable = SSTableReader.open(getDescriptor(version));
+        IPartitioner p = StorageService.getPartitioner();
+        List<Range<Token>> ranges = new ArrayList<>();
+        ranges.add(new Range<>(p.getMinimumToken(), p.getToken(ByteBufferUtil.bytes("100"))));
+        ranges.add(new Range<>(p.getToken(ByteBufferUtil.bytes("100")), p.getMinimumToken()));
+        ArrayList<StreamSession.SSTableStreamingSections> details = new ArrayList<>();
+        details.add(new StreamSession.SSTableStreamingSections(sstable,
+                                                               sstable.getPositionsForRanges(ranges),
+                                                               sstable.estimatedKeysForRanges(ranges), sstable.getSSTableMetadata().repairedAt));
+        new StreamPlan("LegacyStreamingTest").transferFiles(FBUtilities.getBroadcastAddress(), details)
+                                             .execute().get();
+
+        ColumnFamilyStore cfs = Keyspace.open(KSNAME).getColumnFamilyStore(CFNAME);
+        assert cfs.getSSTables().size() == 1;
+        sstable = cfs.getSSTables().iterator().next();
+        CellNameType type = sstable.metadata.comparator;
+        for (String keystring : TEST_DATA)
+        {
+            ByteBuffer key = ByteBufferUtil.bytes(keystring);
+            SSTableNamesIterator iter = new SSTableNamesIterator(sstable, Util.dk(key), FBUtilities.singleton(Util.cellname(key), type));
+            ColumnFamily cf = iter.getColumnFamily();
+
+            // check not deleted (CASSANDRA-6527)
+            assert cf.deletionInfo().equals(DeletionInfo.live());
+            assert iter.next().name().toByteBuffer().equals(key);
+        }
+    }
+
+    @Test
     public void testVersions() throws Throwable
     {
+        boolean notSkipped = false;
+
         for (File version : LEGACY_SSTABLE_ROOT.listFiles())
-            if (Descriptor.Version.validate(version.getName()))
+        {
+            if (Descriptor.Version.validate(version.getName()) && new Descriptor.Version(version.getName()).isCompatible())
+            {
+                notSkipped = true;
                 testVersion(version.getName());
+            }
+        }
+
+        assert notSkipped;
     }
 
     public void testVersion(String version) throws Throwable
@@ -97,13 +175,14 @@ public class LegacySSTableTest extends SchemaLoader
         try
         {
             SSTableReader reader = SSTableReader.open(getDescriptor(version));
+            CellNameType type = reader.metadata.comparator;
             for (String keystring : TEST_DATA)
             {
                 ByteBuffer key = ByteBufferUtil.bytes(keystring);
                 // confirm that the bloom filter does not reject any keys/names
                 DecoratedKey dk = reader.partitioner.decorateKey(key);
-                SSTableNamesIterator iter = new SSTableNamesIterator(reader, dk, FBUtilities.singleton(key));
-                assert iter.next().name().equals(key);
+                SSTableNamesIterator iter = new SSTableNamesIterator(reader, dk, FBUtilities.singleton(Util.cellname(key), type));
+                assert iter.next().name().toByteBuffer().equals(key);
             }
 
             // TODO actually test some reads

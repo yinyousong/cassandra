@@ -66,7 +66,7 @@ public abstract class AbstractReadExecutor
     {
         this.command = command;
         this.targetReplicas = targetReplicas;
-        resolver = new RowDigestResolver(command.ksName, command.key);
+        resolver = new RowDigestResolver(command.ksName, command.key, targetReplicas.size());
         handler = new ReadCallback<>(resolver, consistencyLevel, command, targetReplicas);
     }
 
@@ -77,18 +77,23 @@ public abstract class AbstractReadExecutor
 
     protected void makeDataRequests(Iterable<InetAddress> endpoints)
     {
+        boolean readLocal = false;
         for (InetAddress endpoint : endpoints)
         {
             if (isLocalRequest(endpoint))
             {
-                logger.trace("reading data locally");
-                StageManager.getStage(Stage.READ).execute(new LocalReadRunnable(command, handler));
+                readLocal = true;
             }
             else
             {
                 logger.trace("reading data from {}", endpoint);
                 MessagingService.instance().sendRR(command.createMessage(), endpoint, handler);
             }
+        }
+        if (readLocal)
+        {
+            logger.trace("reading data locally");
+            StageManager.getStage(Stage.READ).maybeExecuteImmediately(new LocalReadRunnable(command, handler));
         }
     }
 

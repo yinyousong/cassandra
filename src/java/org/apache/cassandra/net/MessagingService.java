@@ -37,7 +37,6 @@ import com.google.common.collect.Lists;
 import org.cliffc.high_scale_lib.NonBlockingHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.apache.cassandra.concurrent.DebuggableThreadPoolExecutor;
 import org.apache.cassandra.concurrent.Stage;
 import org.apache.cassandra.concurrent.StageManager;
 import org.apache.cassandra.concurrent.TracingAwareExecutorService;
@@ -51,6 +50,7 @@ import org.apache.cassandra.gms.GossipDigestAck;
 import org.apache.cassandra.gms.GossipDigestAck2;
 import org.apache.cassandra.gms.GossipDigestSyn;
 import org.apache.cassandra.io.IVersionedSerializer;
+import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.locator.ILatencySubscriber;
 import org.apache.cassandra.metrics.ConnectionMetrics;
@@ -64,21 +64,28 @@ import org.apache.cassandra.service.paxos.PrepareResponse;
 import org.apache.cassandra.tracing.TraceState;
 import org.apache.cassandra.tracing.Tracing;
 import org.apache.cassandra.utils.*;
+import org.apache.cassandra.utils.concurrent.SimpleCondition;
 
 public final class MessagingService implements MessagingServiceMBean
 {
     public static final String MBEAN_NAME = "org.apache.cassandra.net:type=MessagingService";
 
     // 8 bits version, so don't waste versions
-    public static final int VERSION_12  = 6;
-    public static final int VERSION_20  = 7;
-    public static final int VERSION_21  = 8;
+    public static final int VERSION_12 = 6;
+    public static final int VERSION_20 = 7;
+    public static final int VERSION_21 = 8;
     public static final int current_version = VERSION_21;
+
+    public static final String FAILURE_CALLBACK_PARAM = "CAL_BAC";
+    public static final byte[] ONE_BYTE = new byte[1];
+    public static final String FAILURE_RESPONSE_PARAM = "FAIL";
 
     /**
      * we preface every message with this number so the recipient can validate the sender is sane
      */
     public static final int PROTOCOL_MAGIC = 0xCA552DFA;
+
+    private boolean allNodesAtLeast21 = true;
 
     /* All verb handler identifiers */
     public enum Verb
@@ -131,9 +138,9 @@ public final class MessagingService implements MessagingServiceMBean
     public static final EnumMap<MessagingService.Verb, Stage> verbStages = new EnumMap<MessagingService.Verb, Stage>(MessagingService.Verb.class)
     {{
         put(Verb.MUTATION, Stage.MUTATION);
+        put(Verb.COUNTER_MUTATION, Stage.COUNTER_MUTATION);
         put(Verb.READ_REPAIR, Stage.MUTATION);
         put(Verb.TRUNCATE, Stage.MUTATION);
-        put(Verb.COUNTER_MUTATION, Stage.MUTATION);
         put(Verb.PAXOS_PREPARE, Stage.MUTATION);
         put(Verb.PAXOS_PROPOSE, Stage.MUTATION);
         put(Verb.PAXOS_COMMIT, Stage.MUTATION);
@@ -166,7 +173,6 @@ public final class MessagingService implements MessagingServiceMBean
         put(Verb.MIGRATION_REQUEST, Stage.MIGRATION);
         put(Verb.INDEX_SCAN, Stage.READ);
         put(Verb.REPLICATION_FINISHED, Stage.MISC);
-        put(Verb.INTERNAL_RESPONSE, Stage.INTERNAL_RESPONSE);
         put(Verb.COUNTER_MUTATION, Stage.MUTATION);
         put(Verb.SNAPSHOT, Stage.MISC);
         put(Verb.ECHO, Stage.GOSSIP);
@@ -190,8 +196,8 @@ public final class MessagingService implements MessagingServiceMBean
         put(Verb.REQUEST_RESPONSE, CallbackDeterminedSerializer.instance);
         put(Verb.INTERNAL_RESPONSE, CallbackDeterminedSerializer.instance);
 
-        put(Verb.MUTATION, RowMutation.serializer);
-        put(Verb.READ_REPAIR, RowMutation.serializer);
+        put(Verb.MUTATION, Mutation.serializer);
+        put(Verb.READ_REPAIR, Mutation.serializer);
         put(Verb.READ, ReadCommand.serializer);
         put(Verb.RANGE_SLICE, RangeSliceCommand.serializer);
         put(Verb.PAGED_RANGE, PagedRangeCommand.serializer);
@@ -250,7 +256,7 @@ public final class MessagingService implements MessagingServiceMBean
             throw new UnsupportedOperationException();
         }
 
-        public void serialize(Object o, DataOutput out, int version) throws IOException
+        public void serialize(Object o, DataOutputPlus out, int version) throws IOException
         {
             throw new UnsupportedOperationException();
         }
@@ -263,21 +269,6 @@ public final class MessagingService implements MessagingServiceMBean
 
     /* Lookup table for registering message handlers based on the verb. */
     private final Map<Verb, IVerbHandler> verbHandlers;
-
-    /**
-     * One executor per destination InetAddress for streaming.
-     * <p/>
-     * See CASSANDRA-3494 for the background. We have streaming in place so we do not want to limit ourselves to
-     * one stream at a time for throttling reasons. But, we also do not want to just arbitrarily stream an unlimited
-     * amount of files at once because a single destination might have hundreds of files pending and it would cause a
-     * seek storm. So, transfer exactly one file per destination host. That puts a very natural rate limit on it, in
-     * addition to mapping well to the expected behavior in many cases.
-     * <p/>
-     * We will create our stream executors with a core size of 0 so that they time out and do not consume threads. This
-     * means the overhead in the degenerate case of having streamed to everyone in the ring over time as a ring changes,
-     * is not going to be a thread per node - but rather an instance per node. That's totally fine.
-     */
-    private final ConcurrentMap<InetAddress, DebuggableThreadPoolExecutor> streamExecutors = new NonBlockingHashMap<InetAddress, DebuggableThreadPoolExecutor>();
 
     private final ConcurrentMap<InetAddress, OutboundTcpConnectionPool> connectionManagers = new NonBlockingHashMap<InetAddress, OutboundTcpConnectionPool>();
 
@@ -295,6 +286,7 @@ public final class MessagingService implements MessagingServiceMBean
     public static final EnumSet<Verb> DROPPABLE_VERBS = EnumSet.of(Verb.BINARY,
                                                                    Verb._TRACE,
                                                                    Verb.MUTATION,
+                                                                   Verb.COUNTER_MUTATION,
                                                                    Verb.READ_REPAIR,
                                                                    Verb.READ,
                                                                    Verb.RANGE_SLICE,
@@ -343,15 +335,25 @@ public final class MessagingService implements MessagingServiceMBean
         {
             public Object apply(Pair<Integer, ExpiringMap.CacheableObject<CallbackInfo>> pair)
             {
-                CallbackInfo expiredCallbackInfo = pair.right.value;
+                final CallbackInfo expiredCallbackInfo = pair.right.value;
                 maybeAddLatency(expiredCallbackInfo.callback, expiredCallbackInfo.target, pair.right.timeout);
                 ConnectionMetrics.totalTimeouts.mark();
                 getConnectionPool(expiredCallbackInfo.target).incrementTimeout();
+                if (expiredCallbackInfo.isFailureCallback())
+                {
+                    StageManager.getStage(Stage.INTERNAL_RESPONSE).submit(new Runnable() {
+                        @Override
+                        public void run() {
+                            ((IAsyncCallbackWithFailure)expiredCallbackInfo.callback).onFailure(expiredCallbackInfo.target);
+                        }
+                    });
+                }
 
                 if (expiredCallbackInfo.shouldHint())
                 {
-                    RowMutation rm = (RowMutation) ((WriteCallbackInfo) expiredCallbackInfo).sentMessage.payload;
-                    return StorageProxy.submitHint(rm, expiredCallbackInfo.target, null);
+                    Mutation mutation = (Mutation) ((WriteCallbackInfo) expiredCallbackInfo).sentMessage.payload;
+
+                    return StorageProxy.submitHint(mutation, expiredCallbackInfo.target, null);
                 }
 
                 return null;
@@ -407,7 +409,7 @@ public final class MessagingService implements MessagingServiceMBean
     public void listen(InetAddress localEp) throws ConfigurationException
     {
         callbacks.reset(); // hack to allow tests to stop/restart MS
-        for (ServerSocket ss : getServerSocket(localEp))
+        for (ServerSocket ss : getServerSockets(localEp))
         {
             SocketThread th = new SocketThread(ss, "ACCEPT-" + localEp);
             th.start();
@@ -416,7 +418,7 @@ public final class MessagingService implements MessagingServiceMBean
         listenGate.signalAll();
     }
 
-    private List<ServerSocket> getServerSocket(InetAddress localEp) throws ConfigurationException
+    private List<ServerSocket> getServerSockets(InetAddress localEp) throws ConfigurationException
     {
         final List<ServerSocket> ss = new ArrayList<ServerSocket>(2);
         if (DatabaseDescriptor.getServerEncryptionOptions().internode_encryption != ServerEncryptionOptions.InternodeEncryption.none)
@@ -456,7 +458,7 @@ public final class MessagingService implements MessagingServiceMBean
             InetSocketAddress address = new InetSocketAddress(localEp, DatabaseDescriptor.getStoragePort());
             try
             {
-                socket.bind(address);
+                socket.bind(address,500);
             }
             catch (BindException e)
             {
@@ -490,6 +492,11 @@ public final class MessagingService implements MessagingServiceMBean
         }
     }
 
+    public boolean isListening()
+    {
+        return listenGate.isSignaled();
+    }
+
     public void destroyConnectionPool(InetAddress to)
     {
         OutboundTcpConnectionPool cp = connectionManagers.get(to);
@@ -507,11 +514,11 @@ public final class MessagingService implements MessagingServiceMBean
             cp = new OutboundTcpConnectionPool(to);
             OutboundTcpConnectionPool existingPool = connectionManagers.putIfAbsent(to, cp);
             if (existingPool != null)
-            {
-                cp.close();
                 cp = existingPool;
-            }
+            else
+                cp.start();
         }
+        cp.waitForStarted();
         return cp;
     }
     
@@ -546,21 +553,34 @@ public final class MessagingService implements MessagingServiceMBean
         return verbHandlers.get(type);
     }
 
-    public int addCallback(IAsyncCallback cb, MessageOut message, InetAddress to, long timeout)
+    public int addCallback(IAsyncCallback cb, MessageOut message, InetAddress to, long timeout, boolean failureCallback)
     {
         assert message.verb != Verb.MUTATION; // mutations need to call the overload with a ConsistencyLevel
         int messageId = nextId();
-        CallbackInfo previous = callbacks.put(messageId, new CallbackInfo(to, cb, callbackDeserializers.get(message.verb)), timeout);
-        assert previous == null;
+        CallbackInfo previous = callbacks.put(messageId, new CallbackInfo(to, cb, callbackDeserializers.get(message.verb), failureCallback), timeout);
+        assert previous == null : String.format("Callback already exists for id %d! (%s)", messageId, previous);
         return messageId;
     }
 
-    public int addCallback(IAsyncCallback cb, MessageOut<? extends IMutation> message, InetAddress to, long timeout, ConsistencyLevel consistencyLevel)
+    public int addCallback(IAsyncCallback cb,
+                           MessageOut<? extends IMutation> message,
+                           InetAddress to,
+                           long timeout,
+                           ConsistencyLevel consistencyLevel,
+                           boolean allowHints)
     {
         assert message.verb == Verb.MUTATION || message.verb == Verb.COUNTER_MUTATION;
         int messageId = nextId();
-        CallbackInfo previous = callbacks.put(messageId, new WriteCallbackInfo(to, cb, message, callbackDeserializers.get(message.verb), consistencyLevel), timeout);
-        assert previous == null;
+
+        CallbackInfo previous = callbacks.put(messageId,
+                                              new WriteCallbackInfo(to,
+                                                                    cb,
+                                                                    message,
+                                                                    callbackDeserializers.get(message.verb),
+                                                                    consistencyLevel,
+                                                                    allowHints),
+                                                                    timeout);
+        assert previous == null : String.format("Callback already exists for id %d! (%s)", messageId, previous);
         return messageId;
     }
 
@@ -573,27 +593,29 @@ public final class MessagingService implements MessagingServiceMBean
 
     public int sendRR(MessageOut message, InetAddress to, IAsyncCallback cb)
     {
-        return sendRR(message, to, cb, message.getTimeout());
+        return sendRR(message, to, cb, message.getTimeout(), false);
+    }
+
+    public int sendRRWithFailure(MessageOut message, InetAddress to, IAsyncCallbackWithFailure cb)
+    {
+        return sendRR(message, to, cb, message.getTimeout(), true);
     }
 
     /**
      * Send a non-mutation message to a given endpoint. This method specifies a callback
      * which is invoked with the actual response.
-     * Also holds the message (only mutation messages) to determine if it
-     * needs to trigger a hint (uses StorageProxy for that).
      *
      * @param message message to be sent.
      * @param to      endpoint to which the message needs to be sent
      * @param cb      callback interface which is used to pass the responses or
      *                suggest that a timeout occurred to the invoker of the send().
-     *                suggest that a timeout occurred to the invoker of the send().
      * @param timeout the timeout used for expiration
      * @return an reference to message id used to match with the result
      */
-    public int sendRR(MessageOut message, InetAddress to, IAsyncCallback cb, long timeout)
+    public int sendRR(MessageOut message, InetAddress to, IAsyncCallback cb, long timeout, boolean failureCallback)
     {
-        int id = addCallback(cb, message, to, timeout);
-        sendOneWay(message, id, to);
+        int id = addCallback(cb, message, to, timeout, failureCallback);
+        sendOneWay(failureCallback ? message.withParameter(FAILURE_CALLBACK_PARAM, ONE_BYTE) : message, id, to);
         return id;
     }
 
@@ -607,12 +629,14 @@ public final class MessagingService implements MessagingServiceMBean
      * @param to      endpoint to which the message needs to be sent
      * @param handler callback interface which is used to pass the responses or
      *                suggest that a timeout occurred to the invoker of the send().
-     *                suggest that a timeout occurred to the invoker of the send().
      * @return an reference to message id used to match with the result
      */
-    public int sendRR(MessageOut<? extends IMutation> message, InetAddress to, AbstractWriteResponseHandler handler)
+    public int sendRR(MessageOut<? extends IMutation> message,
+                      InetAddress to,
+                      AbstractWriteResponseHandler handler,
+                      boolean allowHints)
     {
-        int id = addCallback(handler, message, to, message.getTimeout(), handler.consistencyLevel);
+        int id = addCallback(handler, message, to, message.getTimeout(), handler.consistencyLevel, allowHints);
         sendOneWay(message, id, to);
         return id;
     }
@@ -637,7 +661,7 @@ public final class MessagingService implements MessagingServiceMBean
     public void sendOneWay(MessageOut message, int id, InetAddress to)
     {
         if (logger.isTraceEnabled())
-            logger.trace(FBUtilities.getBroadcastAddress() + " sending " + message.verb + " to " + id + "@" + to);
+            logger.trace("{} sending {} to {}@{}", FBUtilities.getBroadcastAddress(), message.verb, id, to);
 
         if (to.equals(FBUtilities.getBroadcastAddress()))
             logger.trace("Message-to-self {} going over MessagingService", message);
@@ -671,20 +695,6 @@ public final class MessagingService implements MessagingServiceMBean
     public void clearCallbacksUnsafe()
     {
         callbacks.reset();
-    }
-
-    public void waitForStreaming() throws InterruptedException
-    {
-        // this does not prevent new streams from beginning after a drain begins, but since streams are only
-        // started in response to explicit operator action (bootstrap/move/repair/etc) that feels like a feature.
-        for (DebuggableThreadPoolExecutor e : streamExecutors.values())
-            e.shutdown();
-
-        for (DebuggableThreadPoolExecutor e : streamExecutors.values())
-        {
-            if (!e.awaitTermination(24, TimeUnit.HOURS))
-                logger.error("Stream took more than 24H to complete; skipping");
-        }
     }
 
     /**
@@ -766,44 +776,80 @@ public final class MessagingService implements MessagingServiceMBean
         return packed >>> (start + 1) - count & ~(-1 << count);
     }
 
+    public boolean areAllNodesAtLeast21()
+    {
+        return allNodesAtLeast21;
+    }
+
     /**
      * @return the last version associated with address, or @param version if this is the first such version
      */
-    public int setVersion(InetAddress address, int version)
+    public int setVersion(InetAddress endpoint, int version)
     {
-        logger.debug("Setting version {} for {}", version, address);
-        Integer v = versions.put(address, version);
+        logger.debug("Setting version {} for {}", version, endpoint);
+        if (version < VERSION_21)
+            allNodesAtLeast21 = false;
+        Integer v = versions.put(endpoint, version);
+
+        // if the version was increased to 2.0 or later, see if all nodes are >= 2.0 now
+        if (v != null && v < VERSION_21 && version >= VERSION_21)
+            refreshAllNodesAtLeast21();
+
         return v == null ? version : v;
     }
 
     public void resetVersion(InetAddress endpoint)
     {
         logger.debug("Reseting version for {}", endpoint);
-        versions.remove(endpoint);
+        Integer removed = versions.remove(endpoint);
+        if (removed != null && removed <= VERSION_21)
+            refreshAllNodesAtLeast21();
     }
 
-    public Integer getVersion(InetAddress address)
+    private void refreshAllNodesAtLeast21()
     {
-        Integer v = versions.get(address);
+        for (Integer version: versions.values())
+        {
+            if (version < VERSION_21)
+            {
+                allNodesAtLeast21 = false;
+                return;
+            }
+        }
+        allNodesAtLeast21 = true;
+    }
+
+    public int getVersion(InetAddress endpoint)
+    {
+        Integer v = versions.get(endpoint);
         if (v == null)
         {
             // we don't know the version. assume current. we'll know soon enough if that was incorrect.
-            logger.trace("Assuming current protocol version for {}", address);
+            logger.trace("Assuming current protocol version for {}", endpoint);
             return MessagingService.current_version;
         }
         else
-            return v;
+            return Math.min(v, MessagingService.current_version);
     }
 
-    public int getVersion(String address) throws UnknownHostException
+    public int getVersion(String endpoint) throws UnknownHostException
     {
-        return getVersion(InetAddress.getByName(address));
+        return getVersion(InetAddress.getByName(endpoint));
+    }
+
+    public int getRawVersion(InetAddress endpoint)
+    {
+        Integer v = versions.get(endpoint);
+        if (v == null)
+            throw new IllegalStateException("getRawVersion() was called without checking knowsVersion() result first");
+        return v;
     }
 
     public boolean knowsVersion(InetAddress endpoint)
     {
-        return versions.get(endpoint) != null;
+        return versions.containsKey(endpoint);
     }
+
 
     public void incrementDroppedMessages(Verb verb)
     {
@@ -858,42 +904,37 @@ public final class MessagingService implements MessagingServiceMBean
 
         public void run()
         {
-            while (true)
+            while (!server.isClosed())
             {
                 Socket socket = null;
                 try
                 {
                     socket = server.accept();
-                    if (authenticate(socket))
+                    if (!authenticate(socket))
                     {
-                        socket.setKeepAlive(true);
-                        // determine the connection type to decide whether to buffer
-                        DataInputStream in = new DataInputStream(socket.getInputStream());
-                        MessagingService.validateMagic(in.readInt());
-                        int header = in.readInt();
-                        boolean isStream = MessagingService.getBits(header, 3, 1) == 1;
-                        int version = MessagingService.getBits(header, 15, 8);
-                        logger.debug("Connection version {} from {}", version, socket.getInetAddress());
-
-                        if (isStream)
-                        {
-                            new IncomingStreamingConnection(version, socket).start();
-                        }
-                        else
-                        {
-                            boolean compressed = MessagingService.getBits(header, 2, 1) == 1;
-                            new IncomingTcpConnection(version, compressed, socket).start();
-                        }
-                    }
-                    else
-                    {
+                        logger.debug("remote failed to authenticate");
                         socket.close();
+                        continue;
                     }
+
+                    socket.setKeepAlive(true);
+                    // determine the connection type to decide whether to buffer
+                    DataInputStream in = new DataInputStream(socket.getInputStream());
+                    MessagingService.validateMagic(in.readInt());
+                    int header = in.readInt();
+                    boolean isStream = MessagingService.getBits(header, 3, 1) == 1;
+                    int version = MessagingService.getBits(header, 15, 8);
+                    logger.debug("Connection version {} from {}", version, socket.getInetAddress());
+
+                    Thread thread = isStream
+                                  ? new IncomingStreamingConnection(version, socket)
+                                  : new IncomingTcpConnection(version, MessagingService.getBits(header, 2, 1) == 1, socket);
+                    thread.start();
                 }
                 catch (AsynchronousCloseException e)
                 {
                     // this happens when another thread calls close().
-                    logger.info("MessagingService shutting down server thread");
+                    logger.debug("Asynchronous close seen by server thread");
                     break;
                 }
                 catch (ClosedChannelException e)
@@ -907,10 +948,12 @@ public final class MessagingService implements MessagingServiceMBean
                     FileUtils.closeQuietly(socket);
                 }
             }
+            logger.info("MessagingService has terminated the accept() thread");
         }
 
         void close() throws IOException
         {
+            logger.debug("Closing accept() thread");
             server.close();
         }
 

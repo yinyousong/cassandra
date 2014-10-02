@@ -35,7 +35,7 @@ public interface ColumnFamilyStoreMBean
      * Returns the total amount of data stored in the memtable, including
      * column related overhead.
      *
-     * @see org.apache.cassandra.metrics.ColumnFamilyMetrics#memtableDataSize
+     * @see org.apache.cassandra.metrics.ColumnFamilyMetrics#memtableOnHeapSize
      * @return The size in bytes.
      * @deprecated
      */
@@ -146,7 +146,7 @@ public interface ColumnFamilyStoreMBean
     public double getRecentWriteLatencyMicros();
 
     /**
-     * @see org.apache.cassandra.metrics.ColumnFamilyMetrics#pendingTasks
+     * @see org.apache.cassandra.metrics.ColumnFamilyMetrics#pendingFlushes
      * @return the estimated number of tasks pending for this column family
      */
     @Deprecated
@@ -194,7 +194,7 @@ public interface ColumnFamilyStoreMBean
 
     /**
      * @see org.apache.cassandra.metrics.ColumnFamilyMetrics#meanRowSize
-     * @return the size of the smallest compacted row
+     * @return the average row size across all the sstables
      */
     @Deprecated
     public long getMeanRowSize();
@@ -344,4 +344,9 @@ public interface ColumnFamilyStoreMBean
      * @return ratio
      */
     public double getDroppableTombstoneRatio();
+
+    /**
+     * @return the size of SSTables in "snapshots" subdirectory which aren't live anymore
+     */
+    public long trueSnapshotsSize();
 }

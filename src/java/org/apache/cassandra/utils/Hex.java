@@ -18,11 +18,16 @@
 package org.apache.cassandra.utils;
 
 import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class Hex
 {
     private static final Constructor<String> stringConstructor = getProtectedConstructor(String.class, int.class, int.class, char[].class);
     private final static byte[] charToByte = new byte[256];
+    private static final Logger logger = LoggerFactory.getLogger(Hex.class);
 
     // package protected for use by ByteBufferUtil. Do not modify this array !!
     static final char[] byteToChar = new char[16];
@@ -91,6 +96,12 @@ public class Hex
             try
             {
                 s = stringConstructor.newInstance(0, c.length, c);
+            } 
+            catch (InvocationTargetException ite) {
+                // The underlying constructor failed. Unwrapping the exception.
+                Throwable cause = ite.getCause();
+                logger.error("Underlying string constructor threw an error: {}",
+                    cause == null ? ite.getMessage() : cause.getMessage());
             }
             catch (Exception e)
             {
@@ -107,9 +118,9 @@ public class Hex
      * @return Constructor if successful, null if the constructor cannot be
      * accessed
      */
-    public static Constructor getProtectedConstructor(Class klass, Class... paramTypes)
+    public static <T> Constructor<T> getProtectedConstructor(Class<T> klass, Class<?>... paramTypes)
     {
-        Constructor c;
+        Constructor<T> c;
         try
         {
             c = klass.getDeclaredConstructor(paramTypes);

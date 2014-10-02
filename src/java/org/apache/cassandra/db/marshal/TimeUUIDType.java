@@ -26,7 +26,6 @@ import org.apache.cassandra.serializers.TypeSerializer;
 import org.apache.cassandra.serializers.MarshalException;
 import org.apache.cassandra.serializers.TimeUUIDSerializer;
 import org.apache.cassandra.utils.ByteBufferUtil;
-import org.apache.cassandra.utils.UUIDGen;
 
 public class TimeUUIDType extends AbstractType<UUID>
 {
@@ -40,14 +39,9 @@ public class TimeUUIDType extends AbstractType<UUID>
 
     public int compare(ByteBuffer o1, ByteBuffer o2)
     {
-        if (o1.remaining() == 0)
-        {
-            return o2.remaining() == 0 ? 0 : -1;
-        }
-        if (o2.remaining() == 0)
-        {
-            return 1;
-        }
+        if (!o1.hasRemaining() || !o2.hasRemaining())
+            return o1.hasRemaining() ? 1 : o2.hasRemaining() ? -1 : 0;
+
         int res = compareTimestampBytes(o1, o2);
         if (res != 0)
             return res;
@@ -81,41 +75,6 @@ public class TimeUUIDType extends AbstractType<UUID>
         if (d != 0) return d;
 
         return (o1.get(o1Pos + 3) & 0xFF) - (o2.get(o2Pos + 3) & 0xFF);
-    }
-
-    // This accepts dates are valid TimeUUID represensation, which is bogus
-    // (see #4936) but kept for CQL2 for compatibility sake.
-    @Override
-    public ByteBuffer fromStringCQL2(String source) throws MarshalException
-    {
-        // Return an empty ByteBuffer for an empty string.
-        if (source.isEmpty())
-            return ByteBufferUtil.EMPTY_BYTE_BUFFER;
-
-        ByteBuffer idBytes = null;
-
-        // ffffffff-ffff-ffff-ffff-ffffffffff
-        if (regexPattern.matcher(source).matches())
-        {
-            UUID uuid = null;
-            try
-            {
-                uuid = UUID.fromString(source);
-                idBytes = decompose(uuid);
-            }
-            catch (IllegalArgumentException e)
-            {
-                throw new MarshalException(String.format("unable to make UUID from '%s'", source), e);
-            }
-
-            if (uuid.version() != 1)
-                throw new MarshalException("TimeUUID supports only version 1 UUIDs");
-        } else
-        {
-            idBytes = ByteBuffer.wrap(UUIDGen.getTimeUUIDBytes(DateType.dateStringToTimestamp(source)));
-        }
-
-        return idBytes;
     }
 
     public ByteBuffer fromString(String source) throws MarshalException

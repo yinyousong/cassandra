@@ -20,21 +20,19 @@ package org.apache.cassandra.triggers;
 
 import java.io.File;
 import java.nio.ByteBuffer;
-import java.util.Collection;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
+import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 
 import org.apache.cassandra.config.TriggerDefinition;
-import org.apache.cassandra.cql.QueryProcessor;
-import org.apache.cassandra.db.ColumnFamily;
-import org.apache.cassandra.db.CounterMutation;
-import org.apache.cassandra.db.IMutation;
-import org.apache.cassandra.db.RowMutation;
+import org.apache.cassandra.cql3.QueryProcessor;
+import org.apache.cassandra.db.*;
+import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.utils.FBUtilities;
+import org.apache.cassandra.utils.Pair;
 
 public class TriggerExecutor
 {
@@ -62,40 +60,110 @@ public class TriggerExecutor
         cachedTriggers.clear();
     }
 
-    public Collection<RowMutation> execute(Collection<? extends IMutation> updates) throws InvalidRequestException
+    public ColumnFamily execute(ByteBuffer key, ColumnFamily updates) throws InvalidRequestException
     {
-        boolean hasCounters = false;
-        Collection<RowMutation> tmutations = null;
-        for (IMutation mutation : updates)
+        List<Mutation> intermediate = executeInternal(key, updates);
+        if (intermediate == null || intermediate.isEmpty())
+            return updates;
+
+        validateForSinglePartition(updates.metadata().getKeyValidator(), updates.id(), key, intermediate);
+
+        for (Mutation mutation : intermediate)
         {
             for (ColumnFamily cf : mutation.getColumnFamilies())
             {
-                List<RowMutation> intermediate = execute(mutation.key(), cf);
-                if (intermediate == null)
-                    continue;
-
-                validate(intermediate);
-                if (tmutations == null)
-                    tmutations = intermediate;
-                else
-                    tmutations.addAll(intermediate);
+                updates.addAll(cf);
             }
-            if (mutation instanceof CounterMutation)
-                hasCounters = true;
         }
-        if (tmutations != null && hasCounters)
-            throw new InvalidRequestException("Counter mutations and trigger mutations cannot be applied together atomically.");
-        return tmutations;
+        return updates;
     }
 
-    private void validate(Collection<RowMutation> tmutations) throws InvalidRequestException
+    public Collection<Mutation> execute(Collection<? extends IMutation> mutations) throws InvalidRequestException
     {
-        for (RowMutation mutation : tmutations)
+        boolean hasCounters = false;
+        List<Mutation> augmentedMutations = null;
+
+        for (IMutation mutation : mutations)
+        {
+            if (mutation instanceof CounterMutation)
+                hasCounters = true;
+
+            for (ColumnFamily cf : mutation.getColumnFamilies())
+            {
+                List<Mutation> augmentations = executeInternal(mutation.key(), cf);
+                if (augmentations == null || augmentations.isEmpty())
+                    continue;
+
+                validate(augmentations);
+
+                if (augmentedMutations == null)
+                    augmentedMutations = new LinkedList<>();
+                augmentedMutations.addAll(augmentations);
+            }
+        }
+
+        if (augmentedMutations == null)
+            return null;
+
+        if (hasCounters)
+            throw new InvalidRequestException("Counter mutations and trigger mutations cannot be applied together atomically.");
+
+        @SuppressWarnings("unchecked")
+        Collection<Mutation> originalMutations = (Collection<Mutation>) mutations;
+
+        return mergeMutations(Iterables.concat(originalMutations, augmentedMutations));
+    }
+
+    private Collection<Mutation> mergeMutations(Iterable<Mutation> mutations)
+    {
+        Map<Pair<String, ByteBuffer>, Mutation> groupedMutations = new HashMap<>();
+
+        for (Mutation mutation : mutations)
+        {
+            Pair<String, ByteBuffer> key = Pair.create(mutation.getKeyspaceName(), mutation.key());
+            Mutation current = groupedMutations.get(key);
+            if (current == null)
+            {
+                // copy in case the mutation's modifications map is backed by an immutable Collections#singletonMap().
+                groupedMutations.put(key, mutation.copy());
+            }
+            else
+            {
+                current.addAll(mutation);
+            }
+        }
+
+        return groupedMutations.values();
+    }
+
+    private void validateForSinglePartition(AbstractType<?> keyValidator,
+                                            UUID cfId,
+                                            ByteBuffer key,
+                                            Collection<Mutation> tmutations)
+    throws InvalidRequestException
+    {
+        for (Mutation mutation : tmutations)
+        {
+            if (keyValidator.compare(mutation.key(), key) != 0)
+                throw new InvalidRequestException("Partition key of additional mutation does not match primary update key");
+
+            for (ColumnFamily cf : mutation.getColumnFamilies())
+            {
+                if (! cf.id().equals(cfId))
+                    throw new InvalidRequestException("table of additional mutation does not match primary update table");
+            }
+        }
+        validate(tmutations);
+    }
+
+    private void validate(Collection<Mutation> tmutations) throws InvalidRequestException
+    {
+        for (Mutation mutation : tmutations)
         {
             QueryProcessor.validateKey(mutation.key());
             for (ColumnFamily tcf : mutation.getColumnFamilies())
-                for (ByteBuffer tName : tcf.getColumnNames())
-                    QueryProcessor.validateColumn(tcf.metadata(), tName, tcf.getColumn(tName).value());
+                for (Cell cell : tcf)
+                    cell.validateFields(tcf.metadata());
         }
     }
 
@@ -103,12 +171,12 @@ public class TriggerExecutor
      * Switch class loader before using the triggers for the column family, if
      * not loaded them with the custom class loader.
      */
-    private List<RowMutation> execute(ByteBuffer key, ColumnFamily columnFamily)
+    private List<Mutation> executeInternal(ByteBuffer key, ColumnFamily columnFamily)
     {
-        Map<String,TriggerDefinition> triggers = columnFamily.metadata().getTriggers();
+        Map<String, TriggerDefinition> triggers = columnFamily.metadata().getTriggers();
         if (triggers.isEmpty())
             return null;
-        List<RowMutation> tmutations = Lists.newLinkedList();
+        List<Mutation> tmutations = Lists.newLinkedList();
         Thread.currentThread().setContextClassLoader(customClassLoader);
         try
         {
@@ -120,7 +188,7 @@ public class TriggerExecutor
                     trigger = loadTriggerInstance(td.classOption);
                     cachedTriggers.put(td.classOption, trigger);
                 }
-                Collection<RowMutation> temp = trigger.augment(key, columnFamily);
+                Collection<Mutation> temp = trigger.augment(key, columnFamily);
                 if (temp != null)
                     tmutations.addAll(temp);
             }
@@ -128,7 +196,7 @@ public class TriggerExecutor
         }
         catch (Exception ex)
         {
-            throw new RuntimeException(String.format("Exception while creating trigger on CF with ID: %s", columnFamily.id()), ex);
+            throw new RuntimeException(String.format("Exception while creating trigger on table with ID: %s", columnFamily.id()), ex);
         }
         finally
         {

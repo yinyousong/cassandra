@@ -32,7 +32,7 @@ public abstract class AuthenticationStatement extends ParsedStatement implements
         return new Prepared(this);
     }
 
-    public int getBoundsTerms()
+    public int getBoundTerms()
     {
         return 0;
     }
@@ -45,7 +45,7 @@ public abstract class AuthenticationStatement extends ParsedStatement implements
 
     public abstract ResultMessage execute(ClientState state) throws RequestExecutionException, RequestValidationException;
 
-    public ResultMessage executeInternal(QueryState state)
+    public ResultMessage executeInternal(QueryState state, QueryOptions options)
     {
         // executeInternal is for local query only, thus altering users doesn't make sense and is not supported
         throw new UnsupportedOperationException();

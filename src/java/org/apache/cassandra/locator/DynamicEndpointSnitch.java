@@ -45,11 +45,15 @@ public class DynamicEndpointSnitch extends AbstractEndpointSnitch implements ILa
     private int UPDATE_INTERVAL_IN_MS = DatabaseDescriptor.getDynamicUpdateInterval();
     private int RESET_INTERVAL_IN_MS = DatabaseDescriptor.getDynamicResetInterval();
     private double BADNESS_THRESHOLD = DatabaseDescriptor.getDynamicBadnessThreshold();
+
+    // the score for a merged set of endpoints must be this much worse than the score for separate endpoints to
+    // warrant not merging two ranges into a single range
+    private double RANGE_MERGING_PREFERENCE = 1.5;
+
     private String mbeanName;
     private boolean registered = false;
 
     private final ConcurrentHashMap<InetAddress, Double> scores = new ConcurrentHashMap<InetAddress, Double>();
-    private final ConcurrentHashMap<InetAddress, Long> lastReceived = new ConcurrentHashMap<InetAddress, Long>();
     private final ConcurrentHashMap<InetAddress, ExponentiallyDecayingSample> samples = new ConcurrentHashMap<InetAddress, ExponentiallyDecayingSample>();
 
     public final IEndpointSnitch subsnitch;
@@ -157,16 +161,27 @@ public class DynamicEndpointSnitch extends AbstractEndpointSnitch implements ILa
     {
         if (addresses.size() < 2)
             return;
+
         subsnitch.sortByProximity(address, addresses);
-        Double first = scores.get(addresses.get(0));
-        if (first == null)
-            return;
-        for (InetAddress addr : addresses)
+        ArrayList<Double> subsnitchOrderedScores = new ArrayList<>(addresses.size());
+        for (InetAddress inet : addresses)
         {
-            Double next = scores.get(addr);
-            if (next == null)
+            Double score = scores.get(inet);
+            if (score == null)
                 return;
-            if ((first - next) / first > BADNESS_THRESHOLD)
+            subsnitchOrderedScores.add(score);
+        }
+
+        // Sort the scores and then compare them (positionally) to the scores in the subsnitch order.
+        // If any of the subsnitch-ordered scores exceed the optimal/sorted score by BADNESS_THRESHOLD, use
+        // the score-sorted ordering instead of the subsnitch ordering.
+        ArrayList<Double> sortedScores = new ArrayList<>(subsnitchOrderedScores);
+        Collections.sort(sortedScores);
+
+        Iterator<Double> sortedScoreIterator = sortedScores.iterator();
+        for (Double subsnitchScore : subsnitchOrderedScores)
+        {
+            if (subsnitchScore > (sortedScoreIterator.next() * (1.0 + BADNESS_THRESHOLD)))
             {
                 sortByProximityWithScore(address, addresses);
                 return;
@@ -201,8 +216,6 @@ public class DynamicEndpointSnitch extends AbstractEndpointSnitch implements ILa
 
     public void receiveTiming(InetAddress host, long latency) // this is cheap
     {
-        lastReceived.put(host, System.nanoTime());
-
         ExponentiallyDecayingSample sample = samples.get(host);
         if (sample == null)
         {
@@ -228,32 +241,18 @@ public class DynamicEndpointSnitch extends AbstractEndpointSnitch implements ILa
 
         }
         double maxLatency = 1;
-        long maxPenalty = 1;
-        HashMap<InetAddress, Long> penalties = new HashMap<InetAddress, Long>(samples.size());
-        // We're going to weight the latency and time since last reply for each host against the worst one we see, to arrive at sort of a 'badness percentage' for both of them.
-        // first, find the worst for each.
+        // We're going to weight the latency for each host against the worst one we see, to
+        // arrive at sort of a 'badness percentage' for them. First, find the worst for each:
         for (Map.Entry<InetAddress, ExponentiallyDecayingSample> entry : samples.entrySet())
         {
             double mean = entry.getValue().getSnapshot().getMedian();
             if (mean > maxLatency)
                 maxLatency = mean;
-            long timePenalty = lastReceived.containsKey(entry.getKey()) ? lastReceived.get(entry.getKey()) : System.nanoTime();
-            timePenalty = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - timePenalty);
-            timePenalty = timePenalty > UPDATE_INTERVAL_IN_MS ? UPDATE_INTERVAL_IN_MS : timePenalty;
-            // a convenient place to remember this since we've already calculated it and need it later
-            penalties.put(entry.getKey(), timePenalty);
-            if (timePenalty > maxPenalty)
-                maxPenalty = timePenalty;
         }
         // now make another pass to do the weighting based on the maximums we found before
         for (Map.Entry<InetAddress, ExponentiallyDecayingSample> entry: samples.entrySet())
         {
             double score = entry.getValue().getSnapshot().getMedian() / maxLatency;
-            if (penalties.containsKey(entry.getKey()))
-                score += penalties.get(entry.getKey()) / ((double) maxPenalty);
-            else
-                // there's a chance a host was added to the samples after our previous loop to get the time penalties.  Add 1.0 to it, or '100% bad' for the time penalty.
-                score += 1; // maxPenalty / maxPenalty
             // finally, add the severity without any weighting, since hosts scale this relative to their own load and the size of the task causing the severity.
             // "Severity" is basically a measure of compaction activity (CASSANDRA-3722).
             score += StorageService.instance.getSeverity(entry.getKey());
@@ -306,7 +305,7 @@ public class DynamicEndpointSnitch extends AbstractEndpointSnitch implements ILa
 
     public void setSeverity(double severity)
     {
-        StorageService.instance.reportSeverity(severity);
+        StorageService.instance.reportManualSeverity(severity);
     }
 
     public double getSeverity()
@@ -319,6 +318,10 @@ public class DynamicEndpointSnitch extends AbstractEndpointSnitch implements ILa
         if (!subsnitch.isWorthMergingForRangeQuery(merged, l1, l2))
             return false;
 
+        // skip checking scores in the single-node case
+        if (l1.size() == 1 && l2.size() == 1 && l1.get(0).equals(l2.get(0)))
+            return true;
+
         // Make sure we return the subsnitch decision (i.e true if we're here) if we lack too much scores
         double maxMerged = maxScore(merged);
         double maxL1 = maxScore(l1);
@@ -326,7 +329,7 @@ public class DynamicEndpointSnitch extends AbstractEndpointSnitch implements ILa
         if (maxMerged < 0 || maxL1 < 0 || maxL2 < 0)
             return true;
 
-        return maxMerged < maxL1 + maxL2;
+        return maxMerged <= (maxL1 + maxL2) * RANGE_MERGING_PREFERENCE;
     }
 
     // Return the max score for the endpoint in the provided list, or -1.0 if no node have a score.

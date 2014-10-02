@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.Map;
 
 import com.google.common.collect.Iterables;
+import net.nicoulaj.compilecommand.annotations.Inline;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -89,9 +90,16 @@ public enum ConsistencyLevel
         return codeIdx[code];
     }
 
+    private int quorumFor(Keyspace keyspace)
+    {
+        return (keyspace.getReplicationStrategy().getReplicationFactor() / 2) + 1;
+    }
+
     private int localQuorumFor(Keyspace keyspace, String dc)
     {
-        return (((NetworkTopologyStrategy) keyspace.getReplicationStrategy()).getReplicationFactor(dc) / 2) + 1;
+        return (keyspace.getReplicationStrategy() instanceof NetworkTopologyStrategy)
+             ? (((NetworkTopologyStrategy) keyspace.getReplicationStrategy()).getReplicationFactor(dc) / 2) + 1
+             : quorumFor(keyspace);
     }
 
     public int blockFor(Keyspace keyspace)
@@ -108,17 +116,26 @@ public enum ConsistencyLevel
             case THREE:
                 return 3;
             case QUORUM:
-                return (keyspace.getReplicationStrategy().getReplicationFactor() / 2) + 1;
+            case SERIAL:
+                return quorumFor(keyspace);
             case ALL:
                 return keyspace.getReplicationStrategy().getReplicationFactor();
             case LOCAL_QUORUM:
+            case LOCAL_SERIAL:
                 return localQuorumFor(keyspace, DatabaseDescriptor.getLocalDataCenter());
             case EACH_QUORUM:
-                NetworkTopologyStrategy strategy = (NetworkTopologyStrategy) keyspace.getReplicationStrategy();
-                int n = 0;
-                for (String dc : strategy.getDatacenters())
-                    n += localQuorumFor(keyspace, dc);
-                return n;
+                if (keyspace.getReplicationStrategy() instanceof NetworkTopologyStrategy)
+                {
+                    NetworkTopologyStrategy strategy = (NetworkTopologyStrategy) keyspace.getReplicationStrategy();
+                    int n = 0;
+                    for (String dc : strategy.getDatacenters())
+                        n += localQuorumFor(keyspace, dc);
+                    return n;
+                }
+                else
+                {
+                    return quorumFor(keyspace);
+                }
             default:
                 throw new UnsupportedOperationException("Invalid consistency level: " + toString());
         }
@@ -213,12 +230,16 @@ public enum ConsistencyLevel
             case LOCAL_QUORUM:
                 return countLocalEndpoints(liveEndpoints) >= blockFor(keyspace);
             case EACH_QUORUM:
-                for (Map.Entry<String, Integer> entry : countPerDCEndpoints(keyspace, liveEndpoints).entrySet())
+                if (keyspace.getReplicationStrategy() instanceof NetworkTopologyStrategy)
                 {
-                    if (entry.getValue() < localQuorumFor(keyspace, entry.getKey()))
-                        return false;
+                    for (Map.Entry<String, Integer> entry : countPerDCEndpoints(keyspace, liveEndpoints).entrySet())
+                    {
+                        if (entry.getValue() < localQuorumFor(keyspace, entry.getKey()))
+                            return false;
+                    }
+                    return true;
                 }
-                return true;
+                // Fallthough on purpose for SimpleStrategy
             default:
                 return Iterables.size(liveEndpoints) >= blockFor(keyspace);
         }
@@ -231,6 +252,10 @@ public enum ConsistencyLevel
         {
             case ANY:
                 // local hint is acceptable, and local node is always live
+                break;
+            case LOCAL_ONE:
+                if (countLocalEndpoints(liveEndpoints) == 0)
+                    throw new UnavailableException(this, 1, 0);
                 break;
             case LOCAL_QUORUM:
                 int localLive = countLocalEndpoints(liveEndpoints);
@@ -251,14 +276,18 @@ public enum ConsistencyLevel
                 }
                 break;
             case EACH_QUORUM:
-                for (Map.Entry<String, Integer> entry : countPerDCEndpoints(keyspace, liveEndpoints).entrySet())
+                if (keyspace.getReplicationStrategy() instanceof NetworkTopologyStrategy)
                 {
-                    int dcBlockFor = localQuorumFor(keyspace, entry.getKey());
-                    int dcLive = entry.getValue();
-                    if (dcLive < dcBlockFor)
-                        throw new UnavailableException(this, dcBlockFor, dcLive);
+                    for (Map.Entry<String, Integer> entry : countPerDCEndpoints(keyspace, liveEndpoints).entrySet())
+                    {
+                        int dcBlockFor = localQuorumFor(keyspace, entry.getKey());
+                        int dcLive = entry.getValue();
+                        if (dcLive < dcBlockFor)
+                            throw new UnavailableException(this, dcBlockFor, dcLive);
+                    }
+                    break;
                 }
-                break;
+                // Fallthough on purpose for SimpleStrategy
             default:
                 int live = Iterables.size(liveEndpoints);
                 if (live < blockFor)
@@ -285,11 +314,6 @@ public enum ConsistencyLevel
     {
         switch (this)
         {
-            case LOCAL_QUORUM:
-            case EACH_QUORUM:
-            case LOCAL_ONE:
-                requireNetworkTopologyStrategy(keyspaceName);
-                break;
             case SERIAL:
             case LOCAL_SERIAL:
                 throw new InvalidRequestException("You must use conditional updates for serializable writes");
@@ -324,17 +348,10 @@ public enum ConsistencyLevel
     public void validateCounterForWrite(CFMetaData metadata) throws InvalidRequestException
     {
         if (this == ConsistencyLevel.ANY)
-        {
-            throw new InvalidRequestException("Consistency level ANY is not yet supported for counter columnfamily " + metadata.cfName);
-        }
-        else if (!metadata.getReplicateOnWrite() && !(this == ConsistencyLevel.ONE || this == ConsistencyLevel.LOCAL_ONE))
-        {
-            throw new InvalidRequestException("cannot achieve CL > CL.ONE without replicate_on_write on columnfamily " + metadata.cfName);
-        }
-        else if (isSerialConsistency())
-        {
+            throw new InvalidRequestException("Consistency level ANY is not yet supported for counter table " + metadata.cfName);
+
+        if (isSerialConsistency())
             throw new InvalidRequestException("Counter operations are inherently non-serializable");
-        }
     }
 
     private void requireNetworkTopologyStrategy(String keyspaceName) throws InvalidRequestException

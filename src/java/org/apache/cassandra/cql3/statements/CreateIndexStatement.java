@@ -18,7 +18,9 @@
 package org.apache.cassandra.cql3.statements;
 
 import java.util.Collections;
+import java.util.Map;
 
+import com.google.common.collect.ImmutableMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -27,14 +29,13 @@ import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.config.IndexType;
 import org.apache.cassandra.config.Schema;
-import org.apache.cassandra.db.index.SecondaryIndex;
-import org.apache.cassandra.db.marshal.CompositeType;
+import org.apache.cassandra.db.marshal.MapType;
 import org.apache.cassandra.exceptions.*;
 import org.apache.cassandra.cql3.*;
 import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.service.MigrationManager;
 import org.apache.cassandra.thrift.ThriftValidation;
-import org.apache.cassandra.transport.messages.ResultMessage;
+import org.apache.cassandra.transport.Event;
 
 /** A <code>CREATE INDEX</code> statement parsed from a CQL query. */
 public class CreateIndexStatement extends SchemaAlteringStatement
@@ -42,19 +43,21 @@ public class CreateIndexStatement extends SchemaAlteringStatement
     private static final Logger logger = LoggerFactory.getLogger(CreateIndexStatement.class);
 
     private final String indexName;
-    private final ColumnIdentifier columnName;
+    private final IndexTarget target;
+    private final IndexPropDefs properties;
     private final boolean ifNotExists;
-    private final boolean isCustom;
-    private final String indexClass;
 
-    public CreateIndexStatement(CFName name, String indexName, ColumnIdentifier columnName, boolean ifNotExists, boolean isCustom, String indexClass)
+    public CreateIndexStatement(CFName name,
+                                String indexName,
+                                IndexTarget target,
+                                IndexPropDefs properties,
+                                boolean ifNotExists)
     {
         super(name);
         this.indexName = indexName;
-        this.columnName = columnName;
+        this.target = target;
+        this.properties = properties;
         this.ifNotExists = ifNotExists;
-        this.isCustom = isCustom;
-        this.indexClass = indexClass;
     }
 
     public void checkAccess(ClientState state) throws UnauthorizedException, InvalidRequestException
@@ -65,63 +68,92 @@ public class CreateIndexStatement extends SchemaAlteringStatement
     public void validate(ClientState state) throws RequestValidationException
     {
         CFMetaData cfm = ThriftValidation.validateColumnFamily(keyspace(), columnFamily());
-        if (cfm.getDefaultValidator().isCommutative())
+        if (cfm.isCounter())
             throw new InvalidRequestException("Secondary indexes are not supported on counter tables");
 
-        ColumnDefinition cd = cfm.getColumnDefinition(columnName);
+        ColumnDefinition cd = cfm.getColumnDefinition(target.column);
 
         if (cd == null)
-            throw new InvalidRequestException("No column definition found for column " + columnName);
+            throw new InvalidRequestException("No column definition found for column " + target.column);
+
+        boolean isMap = cd.type instanceof MapType;
+        if (target.isCollectionKeys && !isMap)
+            throw new InvalidRequestException("Cannot create index on keys of column " + target + " with non map type");
 
         if (cd.getIndexType() != null)
         {
+            boolean previousIsKeys = cd.getIndexOptions().containsKey("index_keys");
+            if (isMap && target.isCollectionKeys != previousIsKeys)
+            {
+                String msg = "Cannot create index on %s %s, an index on %s %s already exists and indexing "
+                           + "a map on both keys and values at the same time is not currently supported";
+                throw new InvalidRequestException(String.format(msg,
+                                                                target.column, target.isCollectionKeys ? "keys" : "values",
+                                                                target.column, previousIsKeys ? "keys" : "values"));
+            }
+
             if (ifNotExists)
                 return;
             else
                 throw new InvalidRequestException("Index already exists");
         }
 
-        if (isCustom && indexClass == null)
-            throw new InvalidRequestException("CUSTOM index requires specifiying the index class");
-
-        if (!isCustom && indexClass != null)
-            throw new InvalidRequestException("Cannot specify index class for a non-CUSTOM index");
+        properties.validate();
 
         // TODO: we could lift that limitation
-        if (cfm.isDense() && cd.kind != ColumnDefinition.Kind.REGULAR)
-            throw new InvalidRequestException(String.format("Secondary index on %s column %s is not yet supported for compact table", cd.kind, columnName));
+        if (cfm.comparator.isDense() && cd.kind != ColumnDefinition.Kind.REGULAR)
+            throw new InvalidRequestException(String.format("Secondary index on %s column %s is not yet supported for compact table", cd.kind, target.column));
 
-        if (cd.type.isCollection() && !isCustom)
-            throw new InvalidRequestException("Indexes on collections are no yet supported");
+        // It would be possible to support 2ndary index on static columns (but not without modifications of at least ExtendedFilter and
+        // CompositesIndex) and maybe we should, but that means a query like:
+        //     SELECT * FROM foo WHERE static_column = 'bar'
+        // would pull the full partition every time the static column of partition is 'bar', which sounds like offering a
+        // fair potential for foot-shooting, so I prefer leaving that to a follow up ticket once we have identified cases where
+        // such indexing is actually useful.
+        if (cd.isStatic())
+            throw new InvalidRequestException("Secondary indexes are not allowed on static columns");
 
         if (cd.kind == ColumnDefinition.Kind.PARTITION_KEY && cd.isOnAllComponents())
-            throw new InvalidRequestException(String.format("Cannot add secondary index to already primarily indexed column %s", columnName));
+            throw new InvalidRequestException(String.format("Cannot add secondary index to already primarily indexed column %s", target.column));
     }
 
-    public void announceMigration() throws InvalidRequestException, ConfigurationException
+    public boolean announceMigration(boolean isLocalOnly) throws RequestValidationException
     {
-        logger.debug("Updating column {} definition for index {}", columnName, indexName);
-        CFMetaData cfm = Schema.instance.getCFMetaData(keyspace(), columnFamily()).clone();
-        ColumnDefinition cd = cfm.getColumnDefinition(columnName);
+        logger.debug("Updating column {} definition for index {}", target.column, indexName);
+        CFMetaData cfm = Schema.instance.getCFMetaData(keyspace(), columnFamily()).copy();
+        ColumnDefinition cd = cfm.getColumnDefinition(target.column);
 
         if (cd.getIndexType() != null && ifNotExists)
-            return;
+            return false;
 
-        if (isCustom)
-            cd.setIndexType(IndexType.CUSTOM, Collections.singletonMap(SecondaryIndex.CUSTOM_INDEX_OPTION_NAME, indexClass));
-        else if (cfm.hasCompositeComparator())
-            cd.setIndexType(IndexType.COMPOSITES, Collections.<String, String>emptyMap());
+        if (properties.isCustom)
+        {
+            cd.setIndexType(IndexType.CUSTOM, properties.getOptions());
+        }
+        else if (cfm.comparator.isCompound())
+        {
+            Map<String, String> options = Collections.emptyMap();
+            // For now, we only allow indexing values for collections, but we could later allow
+            // to also index map keys, so we record that this is the values we index to make our
+            // lives easier then.
+            if (cd.type.isCollection())
+                options = ImmutableMap.of(target.isCollectionKeys ? "index_keys" : "index_values", "");
+            cd.setIndexType(IndexType.COMPOSITES, options);
+        }
         else
+        {
             cd.setIndexType(IndexType.KEYS, Collections.<String, String>emptyMap());
+        }
 
         cd.setIndexName(indexName);
         cfm.addDefaultIndexNames();
-        MigrationManager.announceColumnFamilyUpdate(cfm, false);
+        MigrationManager.announceColumnFamilyUpdate(cfm, false, isLocalOnly);
+        return true;
     }
 
-    public ResultMessage.SchemaChange.Change changeType()
+    public Event.SchemaChange changeEvent()
     {
         // Creating an index is akin to updating the CF
-        return ResultMessage.SchemaChange.Change.UPDATED;
+        return new Event.SchemaChange(Event.SchemaChange.Change.UPDATED, Event.SchemaChange.Target.TABLE, keyspace(), columnFamily());
     }
 }

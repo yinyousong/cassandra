@@ -22,19 +22,24 @@ import java.util.Collections;
 import java.util.List;
 
 import org.apache.cassandra.db.*;
+import org.apache.cassandra.db.composites.CellName;
 import org.apache.cassandra.db.filter.SliceQueryFilter;
 import org.apache.cassandra.exceptions.RequestValidationException;
 import org.apache.cassandra.exceptions.RequestExecutionException;
 import org.apache.cassandra.service.StorageProxy;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Pager over a SliceFromReadCommand.
  */
 public class SliceQueryPager extends AbstractQueryPager implements SinglePartitionPager
 {
+    private static final Logger logger = LoggerFactory.getLogger(SliceQueryPager.class);
+
     private final SliceFromReadCommand command;
 
-    private volatile ByteBuffer lastReturned;
+    private volatile CellName lastReturned;
 
     // Don't use directly, use QueryPagers method instead
     SliceQueryPager(SliceFromReadCommand command, ConsistencyLevel consistencyLevel, boolean localQuery)
@@ -49,16 +54,21 @@ public class SliceQueryPager extends AbstractQueryPager implements SinglePartiti
 
         if (state != null)
         {
-            lastReturned = state.cellName;
+            lastReturned = cfm.comparator.cellFromByteBuffer(state.cellName);
             restoreState(state.remaining, true);
         }
+    }
+
+    public ByteBuffer key()
+    {
+        return command.key;
     }
 
     public PagingState state()
     {
         return lastReturned == null
              ? null
-             : new PagingState(null, lastReturned, maxRemaining());
+             : new PagingState(null, lastReturned.toByteBuffer(), maxRemaining());
     }
 
     protected List<Row> queryNextPage(int pageSize, ConsistencyLevel consistencyLevel, boolean localQuery)
@@ -68,6 +78,7 @@ public class SliceQueryPager extends AbstractQueryPager implements SinglePartiti
         if (lastReturned != null)
             filter = filter.withUpdatedStart(lastReturned, cfm.comparator);
 
+        logger.debug("Querying next page of slice query; new filter: {}", filter);
         ReadCommand pageCmd = command.withUpdatedFilter(filter);
         return localQuery
              ? Collections.singletonList(pageCmd.getRow(Keyspace.open(command.ksName)))
@@ -76,12 +87,21 @@ public class SliceQueryPager extends AbstractQueryPager implements SinglePartiti
 
     protected boolean containsPreviousLast(Row first)
     {
-        return lastReturned != null && lastReturned.equals(isReversed() ? lastName(first.cf) : firstName(first.cf));
+        if (lastReturned == null)
+            return false;
+
+        Cell firstCell = isReversed() ? lastCell(first.cf) : firstCell(first.cf);
+        // Note: we only return true if the column is the lastReturned *and* it is live. If it is deleted, it is ignored by the
+        // rest of the paging code (it hasn't been counted as live in particular) and we want to act as if it wasn't there.
+        return !first.cf.deletionInfo().isDeleted(firstCell)
+            && firstCell.isLive(timestamp())
+            && lastReturned.equals(firstCell.name());
     }
 
     protected boolean recordLast(Row last)
     {
-        lastReturned = isReversed() ? firstName(last.cf) : lastName(last.cf);
+        Cell lastCell = isReversed() ? firstCell(last.cf) : lastCell(last.cf);
+        lastReturned = lastCell.name();
         return true;
     }
 

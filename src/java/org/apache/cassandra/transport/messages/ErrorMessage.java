@@ -17,10 +17,8 @@
  */
 package org.apache.cassandra.transport.messages;
 
-import java.nio.ByteBuffer;
-
-import org.jboss.netty.buffer.ChannelBuffer;
-import org.jboss.netty.buffer.ChannelBuffers;
+import io.netty.buffer.ByteBuf;
+import com.google.common.base.Predicate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -31,7 +29,6 @@ import org.apache.cassandra.transport.CBUtil;
 import org.apache.cassandra.transport.Message;
 import org.apache.cassandra.transport.ProtocolException;
 import org.apache.cassandra.transport.ServerError;
-import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.MD5Digest;
 
 /**
@@ -43,7 +40,7 @@ public class ErrorMessage extends Message.Response
 
     public static final Message.Codec<ErrorMessage> codec = new Message.Codec<ErrorMessage>()
     {
-        public ErrorMessage decode(ChannelBuffer body, int version)
+        public ErrorMessage decode(ByteBuf body, int version)
         {
             ExceptionCode code = ExceptionCode.fromValue(body.readInt());
             String msg = CBUtil.readString(body);
@@ -123,7 +120,7 @@ public class ErrorMessage extends Message.Response
             return new ErrorMessage(te);
         }
 
-        public void encode(ErrorMessage msg, ChannelBuffer dest, int version)
+        public void encode(ErrorMessage msg, ByteBuf dest, int version)
         {
             dest.writeInt(msg.error.code().value);
             CBUtil.writeString(msg.error.getMessage(), dest);
@@ -208,6 +205,16 @@ public class ErrorMessage extends Message.Response
 
     public static ErrorMessage fromException(Throwable e)
     {
+        return fromException(e, null);
+    }
+
+    /**
+     * @param e the exception
+     * @param unexpectedExceptionHandler a callback for handling unexpected exceptions. If null, or if this
+     *                                   returns false, the error is logged at ERROR level via sl4fj
+     */
+    public static ErrorMessage fromException(Throwable e, Predicate<Throwable> unexpectedExceptionHandler)
+    {
         int streamId = 0;
         if (e instanceof WrappedException)
         {
@@ -219,7 +226,9 @@ public class ErrorMessage extends Message.Response
             return new ErrorMessage((TransportException)e, streamId);
 
         // Unexpected exception
-        logger.error("Unexpected exception during request", e);
+        if (unexpectedExceptionHandler == null || !unexpectedExceptionHandler.apply(e))
+            logger.error("Unexpected exception during request", e);
+
         return new ErrorMessage(new ServerError(e), streamId);
     }
 

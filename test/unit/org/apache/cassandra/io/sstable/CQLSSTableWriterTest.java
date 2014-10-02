@@ -18,32 +18,36 @@
 package org.apache.cassandra.io.sstable;
 
 import java.io.File;
+import java.io.FilenameFilter;
+import java.nio.ByteBuffer;
+import java.util.Arrays;
 import java.util.Iterator;
 
+import com.google.common.collect.ImmutableMap;
 import com.google.common.io.Files;
 import org.junit.BeforeClass;
 import org.junit.Test;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
 
-import org.apache.cassandra.SchemaLoader;
-import org.apache.cassandra.Util;
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.Schema;
-import org.apache.cassandra.cql3.*;
-import org.apache.cassandra.db.*;
+import org.apache.cassandra.cql3.QueryProcessor;
+import org.apache.cassandra.cql3.UntypedResultSet;
+import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.service.StorageService;
-import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.OutputHandler;
 
-public class CQLSSTableWriterTest extends SchemaLoader
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+
+public class CQLSSTableWriterTest
 {
     @BeforeClass
     public static void setup() throws Exception
     {
+        Keyspace.setInitialized();
         StorageService.instance.initServer();
     }
 
@@ -72,13 +76,14 @@ public class CQLSSTableWriterTest extends SchemaLoader
         writer.addRow(0, "test1", 24);
         writer.addRow(1, "test2", null);
         writer.addRow(2, "test3", 42);
+        writer.addRow(ImmutableMap.<String, Object>of("k", 3, "v2", 12));
         writer.close();
 
         SSTableLoader loader = new SSTableLoader(dataDir, new SSTableLoader.Client()
         {
             public void init(String keyspace)
             {
-                for (Range<Token> range : StorageService.instance.getLocalRanges("Keyspace1"))
+                for (Range<Token> range : StorageService.instance.getLocalRanges("cql_keyspace"))
                     addRangeForEndpoint(range, FBUtilities.getBroadcastAddress());
                 setPartitioner(StorageService.getPartitioner());
             }
@@ -91,8 +96,8 @@ public class CQLSSTableWriterTest extends SchemaLoader
 
         loader.stream().get();
 
-        UntypedResultSet rs = QueryProcessor.processInternal("SELECT * FROM cql_keyspace.table1;");
-        assertEquals(3, rs.size());
+        UntypedResultSet rs = QueryProcessor.executeInternal("SELECT * FROM cql_keyspace.table1;");
+        assertEquals(4, rs.size());
 
         Iterator<UntypedResultSet.Row> iter = rs.iterator();
         UntypedResultSet.Row row;
@@ -111,5 +116,46 @@ public class CQLSSTableWriterTest extends SchemaLoader
         assertEquals(2, row.getInt("k"));
         assertEquals("test3", row.getString("v1"));
         assertEquals(42, row.getInt("v2"));
+
+        row = iter.next();
+        assertEquals(3, row.getInt("k"));
+        assertEquals(null, row.getBytes("v1")); // Using getBytes because we know it won't NPE
+        assertEquals(12, row.getInt("v2"));
+    }
+
+    @Test
+    public void testSyncWithinPartition() throws Exception
+    {
+        // Check that the write respect the buffer size even if we only insert rows withing the same partition (#7360)
+        // To do that simply, we use a writer with a buffer of 1MB, and write 2 rows in the same partition with a value
+        // > 1MB and validate that this created more than 1 sstable.
+        File tempdir = Files.createTempDir();
+        String schema = "CREATE TABLE ks.test ("
+                      + "  k int PRIMARY KEY,"
+                      + "  v blob"
+                      + ")";
+        String insert = "INSERT INTO ks.test (k, v) VALUES (?, ?)";
+        CQLSSTableWriter writer = CQLSSTableWriter.builder()
+                                                  .inDirectory(tempdir)
+                                                  .forTable(schema)
+                                                  .withPartitioner(StorageService.instance.getPartitioner())
+                                                  .using(insert)
+                                                  .withBufferSizeInMB(1)
+                                                  .build();
+
+        ByteBuffer val = ByteBuffer.allocate(1024 * 1050);
+
+        writer.addRow(0, val);
+        writer.addRow(1, val);
+        writer.close();
+
+        FilenameFilter filterDataFiles = new FilenameFilter()
+        {
+            public boolean accept(File dir, String name)
+            {
+                return name.endsWith("-Data.db");
+            }
+        };
+        assert tempdir.list(filterDataFiles).length > 1 : Arrays.toString(tempdir.list(filterDataFiles));
     }
 }

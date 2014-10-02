@@ -17,20 +17,27 @@
  */
 package org.apache.cassandra.auth;
 
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
+import com.google.common.cache.CacheBuilder;
+import com.google.common.cache.CacheLoader;
+import com.google.common.cache.LoadingCache;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.KSMetaData;
 import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.cql3.UntypedResultSet;
 import org.apache.cassandra.cql3.QueryProcessor;
 import org.apache.cassandra.cql3.QueryOptions;
+import org.apache.cassandra.cql3.statements.CFStatement;
+import org.apache.cassandra.cql3.statements.CreateTableStatement;
 import org.apache.cassandra.cql3.statements.SelectStatement;
 import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.cassandra.exceptions.RequestExecutionException;
@@ -39,9 +46,9 @@ import org.apache.cassandra.locator.SimpleStrategy;
 import org.apache.cassandra.service.*;
 import org.apache.cassandra.transport.messages.ResultMessage;
 import org.apache.cassandra.utils.ByteBufferUtil;
-import org.apache.cassandra.utils.FBUtilities;
+import org.apache.cassandra.utils.Pair;
 
-public class Auth
+public class Auth implements AuthMBean
 {
     private static final Logger logger = LoggerFactory.getLogger(Auth.class);
 
@@ -51,6 +58,10 @@ public class Auth
 
     public static final String AUTH_KS = "system_auth";
     public static final String USERS_CF = "users";
+
+    // User-level permissions cache.
+    public static volatile LoadingCache<Pair<AuthenticatedUser, IResource>, Set<Permission>> permissionsCache = initPermissionsCache(null);
+
 
     private static final String USERS_CF_SCHEMA = String.format("CREATE TABLE %s.%s ("
                                                                 + "name text,"
@@ -62,6 +73,46 @@ public class Auth
                                                                 90 * 24 * 60 * 60); // 3 months.
 
     private static SelectStatement selectUserStatement;
+
+    public int getPermissionsValidity()
+    {
+        return DatabaseDescriptor.getPermissionsValidity();
+    }
+
+    public void setPermissionsValidity(int timeoutInMs)
+    {
+        DatabaseDescriptor.setPermissionsValidity(timeoutInMs);
+        permissionsCache = initPermissionsCache(permissionsCache);
+    }
+
+    public void invalidatePermissionsCache()
+    {
+        permissionsCache = initPermissionsCache(null);
+    }
+
+    private static LoadingCache<Pair<AuthenticatedUser, IResource>, Set<Permission>> initPermissionsCache(LoadingCache<Pair<AuthenticatedUser, IResource>, Set<Permission>> oldCache)
+    {
+        if (DatabaseDescriptor.getAuthorizer() instanceof AllowAllAuthorizer)
+            return null;
+
+        int validityPeriod = DatabaseDescriptor.getPermissionsValidity();
+        if (validityPeriod <= 0)
+            return null;
+
+        LoadingCache<Pair<AuthenticatedUser, IResource>, Set<Permission>> newCache =
+            CacheBuilder.newBuilder().expireAfterWrite(validityPeriod, TimeUnit.MILLISECONDS)
+                    .build(new CacheLoader<Pair<AuthenticatedUser, IResource>, Set<Permission>>()
+                    {
+                        public Set<Permission> load(Pair<AuthenticatedUser, IResource> userResource)
+                        {
+                            return DatabaseDescriptor.getAuthorizer().authorize(userResource.left,
+                                    userResource.right);
+                        }
+                    });
+        if (oldCache != null)
+            newCache.putAll(oldCache.asMap());
+        return newCache;
+    }
 
     /**
      * Checks if the username is stored in AUTH_KS.USERS_CF.
@@ -127,7 +178,7 @@ public class Auth
             return;
 
         setupAuthKeyspace();
-        setupUsersTable();
+        setupTable(USERS_CF, USERS_CF_SCHEMA);
 
         DatabaseDescriptor.getAuthenticator().setup();
         DatabaseDescriptor.getAuthorizer().setup();
@@ -138,18 +189,15 @@ public class Auth
         // the delay is here to give the node some time to see its peers - to reduce
         // "Skipped default superuser setup: some nodes were not ready" log spam.
         // It's the only reason for the delay.
-        if (DatabaseDescriptor.getSeeds().contains(FBUtilities.getBroadcastAddress()) || !DatabaseDescriptor.isAutoBootstrap())
-        {
-            StorageService.tasks.schedule(new Runnable()
+        StorageService.tasks.schedule(new Runnable()
+                                      {
+                                          public void run()
                                           {
-                                              public void run()
-                                              {
-                                                  setupDefaultSuperuser();
-                                              }
-                                          },
-                                          SUPERUSER_SETUP_DELAY,
-                                          TimeUnit.MILLISECONDS);
-        }
+                                              setupDefaultSuperuser();
+                                          }
+                                      },
+                                      SUPERUSER_SETUP_DELAY,
+                                      TimeUnit.MILLISECONDS);
 
         try
         {
@@ -168,7 +216,7 @@ public class Auth
         if (username.equals(DEFAULT_SUPERUSER_NAME))
             return ConsistencyLevel.QUORUM;
         else
-            return ConsistencyLevel.ONE;
+            return ConsistencyLevel.LOCAL_ONE;
     }
 
     private static void setupAuthKeyspace()
@@ -178,7 +226,7 @@ public class Auth
             try
             {
                 KSMetaData ksm = KSMetaData.newKeyspace(AUTH_KS, SimpleStrategy.class.getName(), ImmutableMap.of("replication_factor", "1"), true);
-                MigrationManager.announceNewKeyspace(ksm, 0);
+                MigrationManager.announceNewKeyspace(ksm, 0, false);
             }
             catch (Exception e)
             {
@@ -187,15 +235,26 @@ public class Auth
         }
     }
 
-    private static void setupUsersTable()
+    /**
+     * Set up table from given CREATE TABLE statement under system_auth keyspace, if not already done so.
+     *
+     * @param name name of the table
+     * @param cql CREATE TABLE statement
+     */
+    public static void setupTable(String name, String cql)
     {
-        if (Schema.instance.getCFMetaData(AUTH_KS, USERS_CF) == null)
+        if (Schema.instance.getCFMetaData(AUTH_KS, name) == null)
         {
             try
             {
-                QueryProcessor.process(USERS_CF_SCHEMA, ConsistencyLevel.ANY);
+                CFStatement parsed = (CFStatement)QueryProcessor.parseStatement(cql);
+                parsed.prepareKeyspace(AUTH_KS);
+                CreateTableStatement statement = (CreateTableStatement) parsed.prepare().statement;
+                CFMetaData cfm = statement.getCFMetaData().copy(CFMetaData.generateLegacyCfId(AUTH_KS, name));
+                assert cfm.cfName.equals(name);
+                MigrationManager.announceNewColumnFamily(cfm);
             }
-            catch (RequestExecutionException e)
+            catch (Exception e)
             {
                 throw new AssertionError(e);
             }
@@ -214,7 +273,7 @@ public class Auth
                                                      USERS_CF,
                                                      DEFAULT_SUPERUSER_NAME,
                                                      true),
-                                       ConsistencyLevel.QUORUM);
+                                       ConsistencyLevel.ONE);
                 logger.info("Created default superuser '{}'", DEFAULT_SUPERUSER_NAME);
             }
         }
@@ -229,7 +288,8 @@ public class Auth
         // Try looking up the 'cassandra' default super user first, to avoid the range query if possible.
         String defaultSUQuery = String.format("SELECT * FROM %s.%s WHERE name = '%s'", AUTH_KS, USERS_CF, DEFAULT_SUPERUSER_NAME);
         String allUsersQuery = String.format("SELECT * FROM %s.%s LIMIT 1", AUTH_KS, USERS_CF);
-        return !QueryProcessor.process(defaultSUQuery, ConsistencyLevel.QUORUM).isEmpty()
+        return !QueryProcessor.process(defaultSUQuery, ConsistencyLevel.ONE).isEmpty()
+            || !QueryProcessor.process(defaultSUQuery, ConsistencyLevel.QUORUM).isEmpty()
             || !QueryProcessor.process(allUsersQuery, ConsistencyLevel.QUORUM).isEmpty();
     }
 
@@ -244,9 +304,9 @@ public class Auth
         try
         {
             ResultMessage.Rows rows = selectUserStatement.execute(QueryState.forInternalCalls(),
-                                                                  new QueryOptions(consistencyForUser(username),
-                                                                                   Lists.newArrayList(ByteBufferUtil.bytes(username))));
-            return new UntypedResultSet(rows.result);
+                                                                  QueryOptions.forInternalCalls(consistencyForUser(username),
+                                                                                                Lists.newArrayList(ByteBufferUtil.bytes(username))));
+            return UntypedResultSet.create(rows.result);
         }
         catch (RequestValidationException e)
         {
@@ -273,6 +333,14 @@ public class Auth
             DatabaseDescriptor.getAuthorizer().revokeAll(DataResource.columnFamily(ksName, cfName));
         }
 
+        public void onDropUserType(String ksName, String userType)
+        {
+        }
+
+        public void onDropFunction(String namespace, String functionName)
+        {
+        }
+
         public void onCreateKeyspace(String ksName)
         {
         }
@@ -281,11 +349,27 @@ public class Auth
         {
         }
 
+        public void onCreateUserType(String ksName, String userType)
+        {
+        }
+
+        public void onCreateFunction(String namespace, String functionName)
+        {
+        }
+
         public void onUpdateKeyspace(String ksName)
         {
         }
 
         public void onUpdateColumnFamily(String ksName, String cfName)
+        {
+        }
+
+        public void onUpdateUserType(String ksName, String userType)
+        {
+        }
+
+        public void onUpdateFunction(String namespace, String functionName)
         {
         }
     }

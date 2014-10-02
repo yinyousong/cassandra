@@ -21,10 +21,12 @@ package org.apache.cassandra.io.sstable;
 import java.util.ArrayList;
 import java.util.Collection;
 
+import org.junit.BeforeClass;
 import org.junit.Test;
 
 import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.Util;
+import org.apache.cassandra.config.KSMetaData;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.columniterator.IdentityQueryFilter;
 import org.apache.cassandra.db.compaction.ICompactionScanner;
@@ -32,14 +34,25 @@ import org.apache.cassandra.dht.Bounds;
 import org.apache.cassandra.dht.BytesToken;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
+import org.apache.cassandra.locator.SimpleStrategy;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 import static org.junit.Assert.*;
 
-public class SSTableScannerTest extends SchemaLoader
+public class SSTableScannerTest
 {
-    public static final String KEYSPACE = "Keyspace1";
+    public static final String KEYSPACE = "SSTableScannerTest";
     public static final String TABLE = "Standard1";
+
+    @BeforeClass
+    public static void defineSchema() throws Exception
+    {
+        SchemaLoader.prepareServer();
+        SchemaLoader.createKeyspace(KEYSPACE,
+                                    SimpleStrategy.class,
+                                    KSMetaData.optsWithRF(1),
+                                    SchemaLoader.standardCFMD(KEYSPACE, TABLE));
+    }
 
     private static String toKey(int key)
     {
@@ -71,16 +84,16 @@ public class SSTableScannerTest extends SchemaLoader
     {
         long timestamp = System.currentTimeMillis();
         DecoratedKey decoratedKey = Util.dk(toKey(key));
-        RowMutation rm = new RowMutation(KEYSPACE, decoratedKey.key);
-        rm.add(TABLE, ByteBufferUtil.bytes("col"), ByteBufferUtil.EMPTY_BYTE_BUFFER, timestamp, 1000);
-        rm.apply();
+        Mutation rm = new Mutation(KEYSPACE, decoratedKey.getKey());
+        rm.add(TABLE, Util.cellname("col"), ByteBufferUtil.EMPTY_BYTE_BUFFER, timestamp, 1000);
+        rm.applyUnsafe();
     }
 
     private static void assertScanMatches(SSTableReader sstable, int scanStart, int scanEnd, int expectedStart, int expectedEnd)
     {
         SSTableScanner scanner = sstable.getScanner(new DataRange(boundsFor(scanStart, scanEnd), new IdentityQueryFilter()));
         for (int i = expectedStart; i <= expectedEnd; i++)
-            assertEquals(toKey(i), new String(scanner.next().getKey().key.array()));
+            assertEquals(toKey(i), new String(scanner.next().getKey().getKey().array()));
         assertFalse(scanner.hasNext());
     }
 
@@ -110,7 +123,7 @@ public class SSTableScannerTest extends SchemaLoader
         // full range scan
         SSTableScanner scanner = sstable.getScanner();
         for (int i = 2; i < 10; i++)
-            assertEquals(toKey(i), new String(scanner.next().getKey().key.array()));
+            assertEquals(toKey(i), new String(scanner.next().getKey().getKey().array()));
 
         // a simple read of a chunk in the middle
         assertScanMatches(sstable, 3, 6, 3, 6);
@@ -147,7 +160,7 @@ public class SSTableScannerTest extends SchemaLoader
             for (int expected = rangeStart; expected <= rangeEnd; expected++)
             {
                 assertTrue(String.format("Expected to see key %03d", expected), scanner.hasNext());
-                assertEquals(toKey(expected), new String(scanner.next().getKey().key.array()));
+                assertEquals(toKey(expected), new String(scanner.next().getKey().getKey().array()));
             }
         }
         assertFalse(scanner.hasNext());
@@ -283,5 +296,33 @@ public class SSTableScannerTest extends SchemaLoader
         // no ranges is equivalent to a full scan
         scanner = sstable.getScanner(new ArrayList<Range<Token>>(), null);
         assertFalse(scanner.hasNext());
+    }
+
+    @Test
+    public void testSingleKeyMultipleRanges()
+    {
+        Keyspace keyspace = Keyspace.open(KEYSPACE);
+        ColumnFamilyStore store = keyspace.getColumnFamilyStore(TABLE);
+        store.clearUnsafe();
+
+        // disable compaction while flushing
+        store.disableAutoCompaction();
+
+        insertRowWithKey(205);
+        store.forceBlockingFlush();
+
+        assertEquals(1, store.getSSTables().size());
+        SSTableReader sstable = store.getSSTables().iterator().next();
+
+        // full range scan
+        SSTableScanner fullScanner = sstable.getScanner();
+        assertScanContainsRanges(fullScanner, 205, 205);
+
+        // scan three ranges separately
+        ICompactionScanner scanner = sstable.getScanner(makeRanges(101, 109,
+                                                                   201, 209), null);
+
+        // this will currently fail
+        assertScanContainsRanges(scanner, 205, 205);
     }
 }

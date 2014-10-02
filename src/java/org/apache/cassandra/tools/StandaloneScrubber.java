@@ -43,6 +43,7 @@ public class StandaloneScrubber
     private static final String DEBUG_OPTION  = "debug";
     private static final String HELP_OPTION  = "help";
     private static final String MANIFEST_CHECK_OPTION  = "manifest-check";
+    private static final String SKIP_CORRUPTED_OPTION = "skip-corrupted";
 
     public static void main(String args[])
     {
@@ -53,7 +54,7 @@ public class StandaloneScrubber
             DatabaseDescriptor.loadSchemas();
 
             if (Schema.instance.getCFMetaData(options.keyspaceName, options.cfName) == null)
-                throw new IllegalArgumentException(String.format("Unknown keyspace/columnFamily %s.%s",
+                throw new IllegalArgumentException(String.format("Unknown keyspace/table %s.%s",
                                                                  options.keyspaceName,
                                                                  options.cfName));
 
@@ -96,7 +97,7 @@ public class StandaloneScrubber
             // If leveled, load the manifest
             if (cfs.getCompactionStrategy() instanceof LeveledCompactionStrategy)
             {
-                int maxSizeInMB = (int)((cfs.getCompactionStrategy().getMaxSSTableSize()) / (1024L * 1024L));
+                int maxSizeInMB = (int)((cfs.getCompactionStrategy().getMaxSSTableBytes()) / (1024L * 1024L));
                 manifest = LeveledManifest.create(cfs, maxSizeInMB, sstables);
             }
 
@@ -106,7 +107,7 @@ public class StandaloneScrubber
                 {
                     try
                     {
-                        Scrubber scrubber = new Scrubber(cfs, sstable, handler, true);
+                        Scrubber scrubber = new Scrubber(cfs, sstable, options.skipCorrupted, handler, true);
                         try
                         {
                             scrubber.scrub();
@@ -116,17 +117,6 @@ public class StandaloneScrubber
                             scrubber.close();
                         }
 
-                        if (manifest != null)
-                        {
-                            if (scrubber.getNewInOrderSSTable() != null)
-                                manifest.add(scrubber.getNewInOrderSSTable());
-
-                            List<SSTableReader> added = scrubber.getNewSSTable() == null
-                                ? Collections.<SSTableReader>emptyList()
-                                : Collections.singletonList(scrubber.getNewSSTable());
-                            manifest.replace(Collections.singletonList(sstable), added);
-                        }
-
                         // Remove the sstable (it's been copied by scrub and snapshotted)
                         sstable.markObsolete();
                         sstable.releaseReference();
@@ -134,8 +124,7 @@ public class StandaloneScrubber
                     catch (Exception e)
                     {
                         System.err.println(String.format("Error scrubbing %s: %s", sstable, e.getMessage()));
-                        if (options.debug)
-                            e.printStackTrace(System.err);
+                        e.printStackTrace(System.err);
                     }
                 }
             }
@@ -171,6 +160,7 @@ public class StandaloneScrubber
         public boolean debug;
         public boolean verbose;
         public boolean manifestCheckOnly;
+        public boolean skipCorrupted;
 
         private Options(String keyspaceName, String cfName)
         {
@@ -209,6 +199,7 @@ public class StandaloneScrubber
                 opts.debug = cmd.hasOption(DEBUG_OPTION);
                 opts.verbose = cmd.hasOption(VERBOSE_OPTION);
                 opts.manifestCheckOnly = cmd.hasOption(MANIFEST_CHECK_OPTION);
+                opts.skipCorrupted = cmd.hasOption(SKIP_CORRUPTED_OPTION);
 
                 return opts;
             }
@@ -233,6 +224,7 @@ public class StandaloneScrubber
             options.addOption("v",  VERBOSE_OPTION,        "verbose output");
             options.addOption("h",  HELP_OPTION,           "display this help message");
             options.addOption("m",  MANIFEST_CHECK_OPTION, "only check and repair the leveled manifest, without actually scrubbing the sstables");
+            options.addOption("s",  SKIP_CORRUPTED_OPTION, "skip corrupt rows in counter tables");
             return options;
         }
 
@@ -241,7 +233,7 @@ public class StandaloneScrubber
             String usage = String.format("%s [options] <keyspace> <column_family>", TOOL_NAME);
             StringBuilder header = new StringBuilder();
             header.append("--\n");
-            header.append("Scrub the sstable for the provided column family." );
+            header.append("Scrub the sstable for the provided table." );
             header.append("\n--\n");
             header.append("Options are:");
             new HelpFormatter().printHelp(usage, header.toString(), options, "");

@@ -20,23 +20,25 @@ package org.apache.cassandra.service;
 import java.net.SocketAddress;
 import java.util.*;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
 
-import com.google.common.cache.CacheBuilder;
-import com.google.common.cache.CacheLoader;
-import com.google.common.cache.LoadingCache;
+import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
-import org.apache.commons.lang3.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.auth.*;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.Schema;
+import org.apache.cassandra.cql3.QueryHandler;
+import org.apache.cassandra.cql3.QueryProcessor;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.db.SystemKeyspace;
 import org.apache.cassandra.exceptions.AuthenticationException;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.exceptions.UnauthorizedException;
 import org.apache.cassandra.tracing.Tracing;
+import org.apache.cassandra.thrift.ThriftValidation;
+import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.Pair;
 import org.apache.cassandra.utils.SemanticVersion;
 
@@ -45,23 +47,17 @@ import org.apache.cassandra.utils.SemanticVersion;
  */
 public class ClientState
 {
+    private static final Logger logger = LoggerFactory.getLogger(ClientState.class);
     public static final SemanticVersion DEFAULT_CQL_VERSION = org.apache.cassandra.cql3.QueryProcessor.CQL_VERSION;
 
     private static final Set<IResource> READABLE_SYSTEM_RESOURCES = new HashSet<>();
     private static final Set<IResource> PROTECTED_AUTH_RESOURCES = new HashSet<>();
 
-    // User-level permissions cache.
-    private static final LoadingCache<Pair<AuthenticatedUser, IResource>, Set<Permission>> permissionsCache = initPermissionsCache();
-
     static
     {
-        // We want these system cfs to be always readable since many tools rely on them (nodetool, cqlsh, bulkloader, etc.)
-        String[] cfs =  new String[] { SystemKeyspace.LOCAL_CF,
-                                       SystemKeyspace.PEERS_CF,
-                                       SystemKeyspace.SCHEMA_KEYSPACES_CF,
-                                       SystemKeyspace.SCHEMA_COLUMNFAMILIES_CF,
-                                       SystemKeyspace.SCHEMA_COLUMNS_CF };
-        for (String cf : cfs)
+        // We want these system cfs to be always readable to authenticated users since many tools rely on them
+        // (nodetool, cqlsh, bulkloader, etc.)
+        for (String cf : Iterables.concat(Arrays.asList(SystemKeyspace.LOCAL_CF, SystemKeyspace.PEERS_CF), SystemKeyspace.allSchemaCfs))
             READABLE_SYSTEM_RESOURCES.add(DataResource.columnFamily(Keyspace.SYSTEM_KS, cf));
 
         PROTECTED_AUTH_RESOURCES.addAll(DatabaseDescriptor.getAuthenticator().protectedResources());
@@ -72,11 +68,29 @@ public class ClientState
     private volatile AuthenticatedUser user;
     private volatile String keyspace;
 
-    private SemanticVersion cqlVersion;
+    private static final QueryHandler cqlQueryHandler;
+    static
+    {
+        QueryHandler handler = QueryProcessor.instance;
+        String customHandlerClass = System.getProperty("cassandra.custom_query_handler_class");
+        if (customHandlerClass != null)
+        {
+            try
+            {
+                handler = (QueryHandler)FBUtilities.construct(customHandlerClass, "QueryHandler");
+                logger.info("Using {} as query handler for native protocol queries (as requested with -Dcassandra.custom_query_handler_class)", customHandlerClass);
+            }
+            catch (Exception e)
+            {
+                logger.info("Cannot use class {} as query handler ({}), ignoring by defaulting on normal query handling", customHandlerClass, e.getMessage());
+            }
+        }
+        cqlQueryHandler = handler;
+    }
 
     // isInternal is used to mark ClientState as used by some internal component
     // that should have an ability to modify system keyspace.
-    private final boolean isInternal;
+    public final boolean isInternal;
 
     // The remote address of the client - null for internal clients.
     private final SocketAddress remoteAddress;
@@ -114,6 +128,11 @@ public class ClientState
         return new ClientState(remoteAddress);
     }
 
+    public static QueryHandler getCQLQueryHandler()
+    {
+        return cqlQueryHandler;
+    }
+
     public SocketAddress getRemoteAddress()
     {
         return remoteAddress;
@@ -127,7 +146,7 @@ public class ClientState
     public String getKeyspace() throws InvalidRequestException
     {
         if (keyspace == null)
-            throw new InvalidRequestException("no keyspace has been specified");
+            throw new InvalidRequestException("No keyspace has been specified. USE a keyspace, or explicitly specify keyspace.tablename");
         return keyspace;
     }
 
@@ -167,6 +186,7 @@ public class ClientState
     public void hasColumnFamilyAccess(String keyspace, String columnFamily, Permission perm)
     throws UnauthorizedException, InvalidRequestException
     {
+        ThriftValidation.validateColumnFamily(keyspace, columnFamily);
         hasAccess(keyspace, perm, DataResource.columnFamily(keyspace, columnFamily));
     }
 
@@ -239,85 +259,25 @@ public class ClientState
             throw new InvalidRequestException("You have not set a keyspace for this session");
     }
 
-    public void setCQLVersion(String str) throws InvalidRequestException
-    {
-        SemanticVersion version;
-        try
-        {
-            version = new SemanticVersion(str);
-        }
-        catch (IllegalArgumentException e)
-        {
-            throw new InvalidRequestException(e.getMessage());
-        }
-
-        SemanticVersion cql = org.apache.cassandra.cql.QueryProcessor.CQL_VERSION;
-        SemanticVersion cql3 = org.apache.cassandra.cql3.QueryProcessor.CQL_VERSION;
-
-        // We've made some backward incompatible changes between CQL3 beta1 and the final.
-        // It's ok because it was a beta, but it still mean we don't support 3.0.0-beta1 so reject it.
-        SemanticVersion cql3Beta = new SemanticVersion("3.0.0-beta1");
-        if (version.equals(cql3Beta))
-            throw new InvalidRequestException(String.format("There has been a few syntax breaking changes between 3.0.0-beta1 and 3.0.0 "
-                                                           + "(mainly the syntax for options of CREATE KEYSPACE and CREATE TABLE). 3.0.0-beta1 "
-                                                           + " is not supported; please upgrade to 3.0.0"));
-        if (version.isSupportedBy(cql))
-            cqlVersion = cql;
-        else if (version.isSupportedBy(cql3))
-            cqlVersion = cql3;
-        else
-            throw new InvalidRequestException(String.format("Provided version %s is not supported by this server (supported: %s)",
-                                                            version,
-                                                            StringUtils.join(getCQLSupportedVersion(), ", ")));
-    }
-
     public AuthenticatedUser getUser()
     {
         return user;
     }
 
-    public SemanticVersion getCQLVersion()
-    {
-        return cqlVersion;
-    }
-
     public static SemanticVersion[] getCQLSupportedVersion()
     {
-        SemanticVersion cql = org.apache.cassandra.cql.QueryProcessor.CQL_VERSION;
-        SemanticVersion cql3 = org.apache.cassandra.cql3.QueryProcessor.CQL_VERSION;
-
-        return new SemanticVersion[]{ cql, cql3 };
-    }
-
-    private static LoadingCache<Pair<AuthenticatedUser, IResource>, Set<Permission>> initPermissionsCache()
-    {
-        if (DatabaseDescriptor.getAuthorizer() instanceof AllowAllAuthorizer)
-            return null;
-
-        int validityPeriod = DatabaseDescriptor.getPermissionsValidity();
-        if (validityPeriod <= 0)
-            return null;
-
-        return CacheBuilder.newBuilder().expireAfterWrite(validityPeriod, TimeUnit.MILLISECONDS)
-                                        .build(new CacheLoader<Pair<AuthenticatedUser, IResource>, Set<Permission>>()
-                                        {
-                                            public Set<Permission> load(Pair<AuthenticatedUser, IResource> userResource)
-                                            {
-                                                return DatabaseDescriptor.getAuthorizer().authorize(userResource.left,
-                                                                                                    userResource.right);
-                                            }
-                                        });
+        return new SemanticVersion[]{ QueryProcessor.CQL_VERSION };
     }
 
     private Set<Permission> authorize(IResource resource)
     {
         // AllowAllAuthorizer or manually disabled caching.
-        if (permissionsCache == null)
+        if (Auth.permissionsCache == null)
             return DatabaseDescriptor.getAuthorizer().authorize(user, resource);
 
         try
         {
-            return permissionsCache.get(Pair.create(user, resource));
+            return Auth.permissionsCache.get(Pair.create(user, resource));
         }
         catch (ExecutionException e)
         {

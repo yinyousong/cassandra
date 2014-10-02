@@ -19,12 +19,7 @@ package org.apache.cassandra.hadoop;
 
 import java.io.IOException;
 import java.net.InetAddress;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Random;
+import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
@@ -83,7 +78,7 @@ public abstract class AbstractColumnFamilyInputFormat<K, Y> extends InputFormat<
     {
         if (ConfigHelper.getInputKeyspace(conf) == null || ConfigHelper.getInputColumnFamily(conf) == null)
         {
-            throw new UnsupportedOperationException("you must set the keyspace and columnfamily with setInputColumnFamily()");
+            throw new UnsupportedOperationException("you must set the keyspace and table with setInputColumnFamily()");
         }
         if (ConfigHelper.getInputInitialAddress(conf) == null)
             throw new UnsupportedOperationException("You must set the initial output address to a Cassandra node with setInputInitialAddress");
@@ -108,7 +103,7 @@ public abstract class AbstractColumnFamilyInputFormat<K, Y> extends InputFormat<
 
         // log in
         client.set_keyspace(ConfigHelper.getInputKeyspace(conf));
-        if (ConfigHelper.getInputKeyspaceUserName(conf) != null)
+        if ((ConfigHelper.getInputKeyspaceUserName(conf) != null) && (ConfigHelper.getInputKeyspacePassword(conf) != null))
         {
             Map<String, String> creds = new HashMap<String, String>();
             creds.put(IAuthenticator.USERNAME_KEY, ConfigHelper.getInputKeyspaceUserName(conf));
@@ -122,17 +117,18 @@ public abstract class AbstractColumnFamilyInputFormat<K, Y> extends InputFormat<
 
     public List<InputSplit> getSplits(JobContext context) throws IOException
     {
-        Configuration conf = context.getConfiguration();
+        Configuration conf = HadoopCompat.getConfiguration(context);;
 
         validateConfiguration(conf);
 
         // cannonical ranges and nodes holding replicas
         List<TokenRange> masterRangeNodes = getRangeMap(conf);
 
-        keyspace = ConfigHelper.getInputKeyspace(context.getConfiguration());
-        cfName = ConfigHelper.getInputColumnFamily(context.getConfiguration());
-        partitioner = ConfigHelper.getInputPartitioner(context.getConfiguration());
+        keyspace = ConfigHelper.getInputKeyspace(conf);
+        cfName = ConfigHelper.getInputColumnFamily(conf);
+        partitioner = ConfigHelper.getInputPartitioner(conf);
         logger.debug("partitioner is {}", partitioner);
+
 
         // cannonical ranges, split into pieces, fetching the splits in parallel
         ExecutorService executor = new ThreadPoolExecutor(0, 128, 60L, TimeUnit.SECONDS, new LinkedBlockingQueue<Runnable>());
@@ -145,11 +141,7 @@ public abstract class AbstractColumnFamilyInputFormat<K, Y> extends InputFormat<
             Range<Token> jobRange = null;
             if (jobKeyRange != null)
             {
-                if (jobKeyRange.start_key == null)
-                {
-                    logger.warn("ignoring jobKeyRange specified without start_key");
-                }
-                else
+                if (jobKeyRange.start_key != null)
                 {
                     if (!partitioner.preservesOrder())
                         throw new UnsupportedOperationException("KeyRange based on keys can only be used with a order preserving paritioner");
@@ -157,9 +149,19 @@ public abstract class AbstractColumnFamilyInputFormat<K, Y> extends InputFormat<
                         throw new IllegalArgumentException("only start_key supported");
                     if (jobKeyRange.end_token != null)
                         throw new IllegalArgumentException("only start_key supported");
-                    jobRange = new Range<Token>(partitioner.getToken(jobKeyRange.start_key),
-                                                partitioner.getToken(jobKeyRange.end_key),
-                                                partitioner);
+                    jobRange = new Range<>(partitioner.getToken(jobKeyRange.start_key),
+                                           partitioner.getToken(jobKeyRange.end_key),
+                                           partitioner);
+                }
+                else if (jobKeyRange.start_token != null)
+                {
+                    jobRange = new Range<>(partitioner.getTokenFactory().fromString(jobKeyRange.start_token),
+                                           partitioner.getTokenFactory().fromString(jobKeyRange.end_token),
+                                           partitioner);
+                }
+                else
+                {
+                    logger.warn("ignoring jobKeyRange specified without start_key or start_token");
                 }
             }
 
@@ -330,7 +332,7 @@ public abstract class AbstractColumnFamilyInputFormat<K, Y> extends InputFormat<
         List<TokenRange> map;
         try
         {
-            map = client.describe_ring(ConfigHelper.getInputKeyspace(conf));
+            map = client.describe_local_ring(ConfigHelper.getInputKeyspace(conf));
         }
         catch (InvalidRequestException e)
         {
@@ -348,7 +350,7 @@ public abstract class AbstractColumnFamilyInputFormat<K, Y> extends InputFormat<
     //
     public org.apache.hadoop.mapred.InputSplit[] getSplits(JobConf jobConf, int numSplits) throws IOException
     {
-        TaskAttemptContext tac = new TaskAttemptContext(jobConf, new TaskAttemptID());
+        TaskAttemptContext tac = HadoopCompat.newTaskAttemptContext(jobConf, new TaskAttemptID());
         List<org.apache.hadoop.mapreduce.InputSplit> newInputSplits = this.getSplits(tac);
         org.apache.hadoop.mapred.InputSplit[] oldInputSplits = new org.apache.hadoop.mapred.InputSplit[newInputSplits.size()];
         for (int i = 0; i < newInputSplits.size(); i++)

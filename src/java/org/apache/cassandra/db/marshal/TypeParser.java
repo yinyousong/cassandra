@@ -271,7 +271,7 @@ public class TypeParser
             {
                 AbstractType<?> type = parse();
                 if (!(type instanceof CollectionType))
-                    throw new SyntaxException(type.toString() + " is not a collection type");
+                    throw new SyntaxException(type + " is not a collection type");
                 map.put(bb, (CollectionType)type);
             }
             catch (SyntaxException e)
@@ -297,7 +297,7 @@ public class TypeParser
         }
     }
 
-    public Pair<ByteBuffer, List<Pair<ByteBuffer, AbstractType>>> getUserTypeParameters() throws SyntaxException, ConfigurationException
+    public Pair<Pair<String, ByteBuffer>, List<Pair<ByteBuffer, AbstractType>>> getUserTypeParameters() throws SyntaxException, ConfigurationException
     {
 
         if (isEOS() || str.charAt(idx) != '(')
@@ -305,6 +305,8 @@ public class TypeParser
 
         ++idx; // skipping '('
 
+        skipBlankAndComma();
+        String keyspace = readNextIdentifier();
         skipBlankAndComma();
         ByteBuffer typeName = fromHex(readNextIdentifier());
         List<Pair<ByteBuffer, AbstractType>> defs = new ArrayList<>();
@@ -314,7 +316,7 @@ public class TypeParser
             if (str.charAt(idx) == ')')
             {
                 ++idx;
-                return Pair.create(typeName, defs);
+                return Pair.create(Pair.create(keyspace, typeName), defs);
             }
 
             ByteBuffer name = fromHex(readNextIdentifier());
@@ -561,16 +563,16 @@ public class TypeParser
         return sb.toString();
     }
 
-    public static String stringifyUserTypeParameters(ByteBuffer typeName, List<ByteBuffer> columnNames, List<AbstractType<?>> columnTypes)
+    public static String stringifyUserTypeParameters(String keysace, ByteBuffer typeName, List<ByteBuffer> columnNames, List<AbstractType<?>> columnTypes)
     {
         StringBuilder sb = new StringBuilder();
-        sb.append('(').append(ByteBufferUtil.bytesToHex(typeName));
+        sb.append('(').append(keysace).append(",").append(ByteBufferUtil.bytesToHex(typeName));
 
         for (int i = 0; i < columnNames.size(); i++)
         {
             sb.append(',');
             sb.append(ByteBufferUtil.bytesToHex(columnNames.get(i))).append(":");
-            sb.append(columnTypes.get(i).toString());
+            sb.append(columnTypes.get(i));
         }
         sb.append(')');
         return sb.toString();

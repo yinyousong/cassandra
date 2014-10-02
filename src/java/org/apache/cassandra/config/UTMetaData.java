@@ -21,6 +21,7 @@ import java.nio.ByteBuffer;
 import java.util.*;
 
 import org.apache.cassandra.db.*;
+import org.apache.cassandra.db.composites.Composite;
 import org.apache.cassandra.db.marshal.*;
 import org.apache.cassandra.exceptions.RequestValidationException;
 import org.apache.cassandra.cql3.*;
@@ -34,27 +35,26 @@ import org.apache.cassandra.utils.ByteBufferUtil;
  */
 public final class UTMetaData
 {
-    private final Map<ByteBuffer, UserType> userTypes = new HashMap<>();
+    private final Map<ByteBuffer, UserType> userTypes;
 
-    // Only for Schema. You should generally not create instance of this, but rather use
-    // the global reference Schema.instance().userTypes;
-    UTMetaData() {}
-
-    public static UTMetaData fromSchema(UntypedResultSet rows)
+    public UTMetaData()
     {
-        UTMetaData m = new UTMetaData();
-        for (UntypedResultSet.Row row : rows)
-            m.addType(fromSchema(row));
-        return m;
+        this(new HashMap<ByteBuffer, UserType>());
+    }
+
+    UTMetaData(Map<ByteBuffer, UserType> types)
+    {
+        this.userTypes = types;
     }
 
     private static UserType fromSchema(UntypedResultSet.Row row)
     {
         try
         {
+            String keyspace = row.getString("keyspace_name");
             ByteBuffer name = ByteBufferUtil.bytes(row.getString("type_name"));
-            List<String> rawColumns = row.getList("column_names", UTF8Type.instance);
-            List<String> rawTypes = row.getList("column_types", UTF8Type.instance);
+            List<String> rawColumns = row.getList("field_names", UTF8Type.instance);
+            List<String> rawTypes = row.getList("field_types", UTF8Type.instance);
 
             List<ByteBuffer> columns = new ArrayList<>(rawColumns.size());
             for (String rawColumn : rawColumns)
@@ -64,7 +64,7 @@ public final class UTMetaData
             for (String rawType : rawTypes)
                 types.add(TypeParser.parse(rawType));
 
-            return new UserType(name, columns, types);
+            return new UserType(keyspace, name, columns, types);
         }
         catch (RequestValidationException e)
         {
@@ -73,53 +73,58 @@ public final class UTMetaData
         }
     }
 
-    public static UTMetaData fromSchema(List<Row> rows)
+    public static Map<ByteBuffer, UserType> fromSchema(Row row)
     {
-        UntypedResultSet result = QueryProcessor.resultify("SELECT * FROM system." + SystemKeyspace.SCHEMA_USER_TYPES_CF, rows);
-        return fromSchema(result);
-    }
-
-    public static RowMutation toSchema(UserType newType, long timestamp)
-    {
-        RowMutation rm = new RowMutation(Keyspace.SYSTEM_KS, newType.name);
-        ColumnFamily cf = rm.addOrGet(SystemKeyspace.SCHEMA_USER_TYPES_CF);
-
-        ColumnNameBuilder builder = CFMetaData.SchemaUserTypesCf.getColumnNameBuilder();
-        UpdateParameters params = new UpdateParameters(CFMetaData.SchemaUserTypesCf, Collections.<ByteBuffer>emptyList(), timestamp, 0, null);
-
-        List<ByteBuffer> columnTypes = new ArrayList<>(newType.types.size());
-        for (AbstractType<?> type : newType.types)
-            columnTypes.add(ByteBufferUtil.bytes(type.toString()));
-
-        try
+        UntypedResultSet results = QueryProcessor.resultify("SELECT * FROM system." + SystemKeyspace.SCHEMA_USER_TYPES_CF, row);
+        Map<ByteBuffer, UserType> types = new HashMap<>(results.size());
+        for (UntypedResultSet.Row result : results)
         {
-            new Lists.Setter(new ColumnIdentifier("column_names", false), new Lists.Value(newType.columnNames)).execute(newType.name, cf, builder.copy(), params);
-            new Lists.Setter(new ColumnIdentifier("column_types", false), new Lists.Value(columnTypes)).execute(newType.name, cf, builder, params);
+            UserType type = fromSchema(result);
+            types.put(type.name, type);
         }
-        catch (RequestValidationException e)
+        return types;
+    }
+
+    public static Mutation toSchema(UserType newType, long timestamp)
+    {
+        return toSchema(new Mutation(Keyspace.SYSTEM_KS, SystemKeyspace.getSchemaKSKey(newType.keyspace)), newType, timestamp);
+    }
+
+    public static Mutation toSchema(Mutation mutation, UserType newType, long timestamp)
+    {
+        ColumnFamily cf = mutation.addOrGet(SystemKeyspace.SCHEMA_USER_TYPES_CF);
+
+        Composite prefix = CFMetaData.SchemaUserTypesCf.comparator.make(newType.name);
+        CFRowAdder adder = new CFRowAdder(cf, prefix, timestamp);
+
+        adder.resetCollection("field_names");
+        adder.resetCollection("field_types");
+
+        for (int i = 0; i < newType.size(); i++)
         {
-            throw new AssertionError();
+            adder.addListEntry("field_names", newType.fieldName(i));
+            adder.addListEntry("field_types", newType.fieldType(i).toString());
         }
-
-        return rm;
+        return mutation;
     }
 
-    public static RowMutation dropFromSchema(UserType droppedType, long timestamp)
+    public Mutation toSchema(Mutation mutation, long timestamp)
     {
-        RowMutation rm = new RowMutation(Keyspace.SYSTEM_KS, droppedType.name);
-        rm.delete(SystemKeyspace.SCHEMA_USER_TYPES_CF, timestamp);
-        return rm;
+        for (UserType ut : userTypes.values())
+            toSchema(mutation, ut, timestamp);
+        return mutation;
     }
 
-    public void addAll(UTMetaData types)
+    public static Mutation dropFromSchema(UserType droppedType, long timestamp)
     {
-        for (UserType type : types.userTypes.values())
-            addType(type);
-    }
+        Mutation mutation = new Mutation(Keyspace.SYSTEM_KS, SystemKeyspace.getSchemaKSKey(droppedType.keyspace));
+        ColumnFamily cf = mutation.addOrGet(SystemKeyspace.SCHEMA_USER_TYPES_CF);
+        int ldt = (int) (System.currentTimeMillis() / 1000);
 
-    public UserType getType(ColumnIdentifier typeName)
-    {
-        return getType(typeName.bytes);
+        Composite prefix = CFMetaData.SchemaUserTypesCf.comparator.make(droppedType.name);
+        cf.addAtom(new RangeTombstone(prefix, prefix.end(), timestamp, ldt));
+
+        return mutation;
     }
 
     public UserType getType(ByteBuffer typeName)
@@ -133,9 +138,7 @@ public final class UTMetaData
         return new HashMap<>(userTypes);
     }
 
-    // This is *not* thread safe. As far as the global instance is concerned, only
-    // Schema.loadType() (which is only called in DefsTables that is synchronized)
-    // should use this.
+    // This is *not* thread safe but is only called in DefsTables that is synchronized.
     public void addType(UserType type)
     {
         UserType old = userTypes.get(type.name);
@@ -147,5 +150,12 @@ public final class UTMetaData
     public void removeType(UserType type)
     {
         userTypes.remove(type.name);
+    }
+
+    public boolean equals(Object that)
+    {
+        if (!(that instanceof UTMetaData))
+            return false;
+        return userTypes.equals(((UTMetaData) that).userTypes);
     }
 }

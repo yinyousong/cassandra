@@ -20,18 +20,17 @@ package org.apache.cassandra.db.compaction;
 import java.nio.ByteBuffer;
 import java.util.*;
 
+import org.junit.BeforeClass;
 import org.junit.Test;
 
 import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.Util;
-import org.apache.cassandra.db.ColumnFamilyStore;
-import org.apache.cassandra.db.DecoratedKey;
-import org.apache.cassandra.db.Keyspace;
-import org.apache.cassandra.db.RowMutation;
+import org.apache.cassandra.config.KSMetaData;
+import org.apache.cassandra.db.*;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.sstable.SSTableReader;
+import org.apache.cassandra.locator.SimpleStrategy;
 import org.apache.cassandra.metrics.RestorableMeter;
-import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.Pair;
 
 import static org.apache.cassandra.db.compaction.SizeTieredCompactionStrategy.getBuckets;
@@ -42,8 +41,23 @@ import static org.apache.cassandra.db.compaction.SizeTieredCompactionStrategy.va
 
 import static org.junit.Assert.*;
 
-public class SizeTieredCompactionStrategyTest extends SchemaLoader
+public class SizeTieredCompactionStrategyTest
 {
+    public static final String KEYSPACE1 = "SizeTieredCompactionStrategyTest";
+    private static final String CF_STANDARD1 = "Standard1";
+
+    @BeforeClass
+    public static void defineSchema() throws ConfigurationException
+    {
+        Map<String, String> leveledOptions = new HashMap<>();
+        leveledOptions.put("sstable_size_in_mb", "1");
+        SchemaLoader.prepareServer();
+        SchemaLoader.createKeyspace(KEYSPACE1,
+                                    SimpleStrategy.class,
+                                    KSMetaData.optsWithRF(1),
+                                    SchemaLoader.standardCFMD(KEYSPACE1, CF_STANDARD1)
+                                                .compactionStrategyOptions(leveledOptions));
+    }
 
     @Test
     public void testOptionsValidation() throws ConfigurationException
@@ -150,7 +164,7 @@ public class SizeTieredCompactionStrategyTest extends SchemaLoader
     @Test
     public void testPrepBucket() throws Exception
     {
-        String ksname = "Keyspace1";
+        String ksname = KEYSPACE1;
         String cfname = "Standard1";
         Keyspace keyspace = Keyspace.open(ksname);
         ColumnFamilyStore cfs = keyspace.getColumnFamilyStore(cfname);
@@ -164,9 +178,9 @@ public class SizeTieredCompactionStrategyTest extends SchemaLoader
         for (int r = 0; r < numSSTables; r++)
         {
             DecoratedKey key = Util.dk(String.valueOf(r));
-            RowMutation rm = new RowMutation(ksname, key.key);
-            rm.add(cfname, ByteBufferUtil.bytes("column"), value, 0);
-            rm.apply();
+            Mutation rm = new Mutation(ksname, key.getKey());
+            rm.add(cfname, Util.cellname("column"), value, 0);
+            rm.applyUnsafe();
             cfs.forceBlockingFlush();
         }
         cfs.forceBlockingFlush();
@@ -194,7 +208,7 @@ public class SizeTieredCompactionStrategyTest extends SchemaLoader
     @Test
     public void testFilterColdSSTables() throws Exception
     {
-        String ksname = "Keyspace1";
+        String ksname = KEYSPACE1;
         String cfname = "Standard1";
         Keyspace keyspace = Keyspace.open(ksname);
         ColumnFamilyStore cfs = keyspace.getColumnFamilyStore(cfname);
@@ -208,9 +222,9 @@ public class SizeTieredCompactionStrategyTest extends SchemaLoader
         for (int r = 0; r < numSSTables; r++)
         {
             DecoratedKey key = Util.dk(String.valueOf(r));
-            RowMutation rm = new RowMutation(ksname, key.key);
-            rm.add(cfname, ByteBufferUtil.bytes("column"), value, 0);
-            rm.apply();
+            Mutation rm = new Mutation(ksname, key.getKey());
+            rm.add(cfname, Util.cellname("column"), value, 0);
+            rm.applyUnsafe();
             cfs.forceBlockingFlush();
         }
         cfs.forceBlockingFlush();

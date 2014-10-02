@@ -30,14 +30,13 @@ import org.slf4j.LoggerFactory;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.DataTracker;
 import org.apache.cassandra.db.DecoratedKey;
-import org.apache.cassandra.io.sstable.SSTableIdentityIterator;
 import org.apache.cassandra.io.sstable.SSTableReader;
 import org.apache.cassandra.utils.AlwaysPresentFilter;
 
 /**
  * Manage compaction options.
  */
-public class CompactionController
+public class CompactionController implements AutoCloseable
 {
     private static final Logger logger = LoggerFactory.getLogger(CompactionController.class);
 
@@ -47,7 +46,6 @@ public class CompactionController
     private final Set<SSTableReader> compacting;
 
     public final int gcBefore;
-    public final int mergeShardBefore;
 
     protected CompactionController(ColumnFamilyStore cfs, int maxValue)
     {
@@ -60,11 +58,6 @@ public class CompactionController
         this.cfs = cfs;
         this.gcBefore = gcBefore;
         this.compacting = compacting;
-        // If we merge an old CounterId id, we must make sure that no further increment for that id are in an active memtable.
-        // For that, we must make sure that this id was renewed before the creation of the oldest unflushed memtable. We
-        // add 5 minutes to be sure we're on the safe side in terms of thread safety (though we should be fine in our
-        // current 'stop all write during memtable switch' situation).
-        this.mergeShardBefore = (int) ((cfs.oldestUnflushedMemtable() + 5 * 3600) / 1000);
         Set<SSTableReader> overlapping = compacting == null ? null : cfs.getAndReferenceOverlappingSSTables(compacting);
         this.overlappingSSTables = overlapping == null ? Collections.<SSTableReader>emptySet() : overlapping;
         this.overlappingTree = overlapping == null ? null : DataTracker.buildIntervalTree(overlapping);
@@ -134,7 +127,7 @@ public class CompactionController
                         candidate, candidate.getSSTableMetadata().maxLocalDeletionTime, gcBefore);
             }
         }
-        return new HashSet<SSTableReader>(candidates);
+        return new HashSet<>(candidates);
     }
 
     public String getKeyspace()
@@ -149,8 +142,9 @@ public class CompactionController
 
     /**
      * @return the largest timestamp before which it's okay to drop tombstones for the given partition;
-     * i.e., after the maxPurgeableTimestamp there may exist newer data that still needs to be supressed
-     * in other sstables.
+     * i.e., after the maxPurgeableTimestamp there may exist newer data that still needs to be suppressed
+     * in other sstables.  This returns the minimum timestamp for any SSTable that contains this partition and is not
+     * participating in this compaction, or LONG.MAX_VALUE if no such SSTable exists.
      */
     public long maxPurgeableTimestamp(DecoratedKey key)
     {
@@ -162,7 +156,7 @@ public class CompactionController
             // we check index file instead.
             if (sstable.getBloomFilter() instanceof AlwaysPresentFilter && sstable.getPosition(key, SSTableReader.Operator.EQ, false) != null)
                 min = Math.min(min, sstable.getMinTimestamp());
-            else if (sstable.getBloomFilter().isPresent(key.key))
+            else if (sstable.getBloomFilter().isPresent(key.getKey()))
                 min = Math.min(min, sstable.getMinTimestamp());
         }
         return min;

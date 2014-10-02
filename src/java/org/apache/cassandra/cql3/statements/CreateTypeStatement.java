@@ -29,23 +29,30 @@ import org.apache.cassandra.db.marshal.UserType;
 import org.apache.cassandra.exceptions.*;
 import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.service.MigrationManager;
-import org.apache.cassandra.transport.messages.ResultMessage;
+import org.apache.cassandra.transport.Event;
 
 public class CreateTypeStatement extends SchemaAlteringStatement
 {
-    private final ColumnIdentifier name;
+    private final UTName name;
     private final List<ColumnIdentifier> columnNames = new ArrayList<>();
-    private final List<CQL3Type> columnTypes = new ArrayList<>();
+    private final List<CQL3Type.Raw> columnTypes = new ArrayList<>();
     private final boolean ifNotExists;
 
-    public CreateTypeStatement(ColumnIdentifier name, boolean ifNotExists)
+    public CreateTypeStatement(UTName name, boolean ifNotExists)
     {
         super();
         this.name = name;
         this.ifNotExists = ifNotExists;
     }
 
-    public void addDefinition(ColumnIdentifier name, CQL3Type type)
+    @Override
+    public void prepareKeyspace(ClientState state) throws InvalidRequestException
+    {
+        if (!name.hasKeyspace())
+            name.setKeyspace(state.getKeyspace());
+    }
+
+    public void addDefinition(ColumnIdentifier name, CQL3Type.Raw type)
     {
         columnNames.add(name);
         columnTypes.add(type);
@@ -53,24 +60,31 @@ public class CreateTypeStatement extends SchemaAlteringStatement
 
     public void checkAccess(ClientState state) throws UnauthorizedException, InvalidRequestException
     {
-        // We may want a slightly different permission?
-        state.hasAllKeyspacesAccess(Permission.CREATE);
+        state.hasKeyspaceAccess(keyspace(), Permission.CREATE);
     }
 
     public void validate(ClientState state) throws RequestValidationException
     {
-        if (Schema.instance.userTypes.getType(name) != null && !ifNotExists)
-            throw new InvalidRequestException(String.format("A user type of name %s already exists.", name));
+        KSMetaData ksm = Schema.instance.getKSMetaData(name.getKeyspace());
+        if (ksm == null)
+            throw new InvalidRequestException(String.format("Cannot add type in unknown keyspace %s", name.getKeyspace()));
+
+        if (ksm.userTypes.getType(name.getUserTypeName()) != null && !ifNotExists)
+            throw new InvalidRequestException(String.format("A user type of name %s already exists", name));
+
+        for (CQL3Type.Raw type : columnTypes)
+            if (type.isCounter())
+                throw new InvalidRequestException("A user type cannot contain counters");
     }
 
     public static void checkForDuplicateNames(UserType type) throws InvalidRequestException
     {
-        for (int i = 0; i < type.types.size() - 1; i++)
+        for (int i = 0; i < type.size() - 1; i++)
         {
-            ByteBuffer fieldName = type.columnNames.get(i);
-            for (int j = i+1; j < type.types.size(); j++)
+            ByteBuffer fieldName = type.fieldName(i);
+            for (int j = i+1; j < type.size(); j++)
             {
-                if (fieldName.equals(type.columnNames.get(j)))
+                if (fieldName.equals(type.fieldName(j)))
                     throw new InvalidRequestException(String.format("Duplicate field name %s in type %s",
                                                                     UTF8Type.instance.getString(fieldName),
                                                                     UTF8Type.instance.getString(type.name)));
@@ -78,40 +92,42 @@ public class CreateTypeStatement extends SchemaAlteringStatement
         }
     }
 
-    public ResultMessage.SchemaChange.Change changeType()
+    public Event.SchemaChange changeEvent()
     {
-        return ResultMessage.SchemaChange.Change.CREATED;
+        return new Event.SchemaChange(Event.SchemaChange.Change.CREATED, Event.SchemaChange.Target.TYPE, keyspace(), name.getStringTypeName());
     }
 
     @Override
     public String keyspace()
     {
-        // Kind of ugly, but SchemaAlteringStatement uses that for notifying change, and an empty keyspace
-        // there kind of make sense
-        return "";
+        return name.getKeyspace();
     }
 
-    private UserType createType()
+    private UserType createType() throws InvalidRequestException
     {
         List<ByteBuffer> names = new ArrayList<>(columnNames.size());
         for (ColumnIdentifier name : columnNames)
             names.add(name.bytes);
 
         List<AbstractType<?>> types = new ArrayList<>(columnTypes.size());
-        for (CQL3Type type : columnTypes)
-            types.add(type.getType());
+        for (CQL3Type.Raw type : columnTypes)
+            types.add(type.prepare(keyspace()).getType());
 
-        return new UserType(name.bytes, names, types);
+        return new UserType(name.getKeyspace(), name.getUserTypeName(), names, types);
     }
 
-    public void announceMigration() throws InvalidRequestException, ConfigurationException
+    public boolean announceMigration(boolean isLocalOnly) throws InvalidRequestException, ConfigurationException
     {
+        KSMetaData ksm = Schema.instance.getKSMetaData(name.getKeyspace());
+        assert ksm != null; // should haven't validate otherwise
+
         // Can happen with ifNotExists
-        if (Schema.instance.userTypes.getType(name) != null)
-            return;
+        if (ksm.userTypes.getType(name.getUserTypeName()) != null)
+            return false;
 
         UserType type = createType();
         checkForDuplicateNames(type);
-        MigrationManager.announceNewType(type);
+        MigrationManager.announceNewType(type, isLocalOnly);
+        return true;
     }
 }

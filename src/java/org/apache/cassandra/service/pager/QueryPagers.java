@@ -57,7 +57,8 @@ public class QueryPagers
         {
             List<ReadCommand> commands = ((Pageable.ReadCommands)command).commands;
 
-            int maxQueried = 0;
+            // Using long on purpose, as we could overflow otherwise
+            long maxQueried = 0;
             for (ReadCommand readCmd : commands)
                 maxQueried += maxQueried(readCmd);
 
@@ -70,15 +71,21 @@ public class QueryPagers
         else
         {
             assert command instanceof RangeSliceCommand;
-            // We can never be sure a range slice won't need paging
-            return true;
+            RangeSliceCommand rsc = (RangeSliceCommand)command;
+            // We don't support paging for thrift in general because the way thrift RangeSliceCommand count rows
+            // independently of cells makes things harder (see RangeSliceQueryPager). The one case where we do
+            // get a RangeSliceCommand from CQL3 without the countCQL3Rows flag set is for DISTINCT. In that case
+            // however, the underlying sliceQueryFilter count is 1, so that the RSC limit is still a limit on the
+            // number of CQL3 rows returned.
+            assert rsc.countCQL3Rows || (rsc.predicate instanceof SliceQueryFilter && ((SliceQueryFilter)rsc.predicate).count == 1);
+            return rsc.maxResults > pageSize;
         }
     }
 
     private static QueryPager pager(ReadCommand command, ConsistencyLevel consistencyLevel, boolean local, PagingState state)
     {
         if (command instanceof SliceByNamesReadCommand)
-            return new NamesQueryPager((SliceByNamesReadCommand)command, consistencyLevel, local, state);
+            return new NamesQueryPager((SliceByNamesReadCommand)command, consistencyLevel, local);
         else
             return new SliceQueryPager((SliceFromReadCommand)command, consistencyLevel, local, state);
     }
@@ -146,7 +153,7 @@ public class QueryPagers
                 {
                     List<Row> rows = pager.fetchPage(pageSize);
                     ColumnFamily cf = rows.isEmpty() ? null : rows.get(0).cf;
-                    return cf == null ? EmptyColumns.factory.create(cfs.metadata) : cf;
+                    return cf == null ? ArrayBackedSortedColumns.factory.create(cfs.metadata) : cf;
                 }
                 catch (Exception e)
                 {

@@ -25,6 +25,7 @@ import java.util.*;
 
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.columniterator.OnDiskAtomIterator;
+import org.apache.cassandra.service.ActiveRepairService;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 import org.apache.cassandra.Util;
@@ -36,11 +37,23 @@ public class SSTableUtils
     public static String KEYSPACENAME = "Keyspace1";
     public static String CFNAME = "Standard1";
 
-    public static ColumnFamily createCF(long mfda, int ldt, Column... cols)
+    public SSTableUtils(String ksname, String cfname)
     {
-        ColumnFamily cf = TreeMapBackedSortedColumns.factory.create(KEYSPACENAME, CFNAME);
+        KEYSPACENAME = ksname;
+        CFNAME = cfname;
+    }
+
+    /**/
+    public static ColumnFamily createCF(long mfda, int ldt, Cell... cols)
+    {
+        return createCF(KEYSPACENAME, CFNAME, mfda, ldt, cols);
+    }
+
+    public static ColumnFamily createCF(String ksname, String cfname, long mfda, int ldt, Cell... cols)
+    {
+        ColumnFamily cf = ArrayBackedSortedColumns.factory.create(ksname, cfname);
         cf.delete(new DeletionInfo(mfda, ldt));
-        for (Column col : cols)
+        for (Cell col : cols)
             cf.addColumn(col);
         return cf;
     }
@@ -56,17 +69,17 @@ public class SSTableUtils
         if(!tempdir.delete() || !tempdir.mkdir())
             throw new IOException("Temporary directory creation failed.");
         tempdir.deleteOnExit();
-        File keyspaceDir = new File(tempdir, keyspaceName);
-        keyspaceDir.mkdir();
-        keyspaceDir.deleteOnExit();
-        File datafile = new File(new Descriptor(keyspaceDir, keyspaceName, cfname, generation, false).filenameFor("Data.db"));
+        File cfDir = new File(tempdir, keyspaceName + File.separator + cfname);
+        cfDir.mkdirs();
+        cfDir.deleteOnExit();
+        File datafile = new File(new Descriptor(cfDir, keyspaceName, cfname, generation, Descriptor.Type.FINAL).filenameFor("Data.db"));
         if (!datafile.createNewFile())
             throw new IOException("unable to create file " + datafile);
         datafile.deleteOnExit();
         return datafile;
     }
 
-    public static void assertContentEquals(SSTableReader lhs, SSTableReader rhs) throws IOException
+    public static void assertContentEquals(SSTableReader lhs, SSTableReader rhs)
     {
         SSTableScanner slhs = lhs.getScanner();
         SSTableScanner srhs = rhs.getScanner();
@@ -80,7 +93,7 @@ public class SSTableUtils
         assert !srhs.hasNext() : "RHS contained more rows than LHS";
     }
 
-    public static void assertContentEquals(OnDiskAtomIterator lhs, OnDiskAtomIterator rhs) throws IOException
+    public static void assertContentEquals(OnDiskAtomIterator lhs, OnDiskAtomIterator rhs)
     {
         assertEquals(lhs.getKey(), rhs.getKey());
         // check metadata
@@ -98,9 +111,9 @@ public class SSTableUtils
         // iterate columns
         while (lhs.hasNext())
         {
-            Column clhs = (Column)lhs.next();
+            Cell clhs = (Cell)lhs.next();
             assert rhs.hasNext() : "LHS contained more columns than RHS for " + lhs.getKey();
-            Column crhs = (Column)rhs.next();
+            Cell crhs = (Cell)rhs.next();
 
             assertEquals("Mismatched columns for " + lhs.getKey(), clhs, crhs);
         }
@@ -162,8 +175,8 @@ public class SSTableUtils
             Map<String, ColumnFamily> map = new HashMap<String, ColumnFamily>();
             for (String key : keys)
             {
-                ColumnFamily cf = TreeMapBackedSortedColumns.factory.create(ksname, cfname);
-                cf.addColumn(new Column(ByteBufferUtil.bytes(key), ByteBufferUtil.bytes(key), 0));
+                ColumnFamily cf = ArrayBackedSortedColumns.factory.create(ksname, cfname);
+                cf.addColumn(new BufferCell(Util.cellname(key), ByteBufferUtil.bytes(key), 0));
                 map.put(key, cf);
             }
             return write(map);
@@ -198,7 +211,7 @@ public class SSTableUtils
         public SSTableReader write(int expectedSize, Appender appender) throws IOException
         {
             File datafile = (dest == null) ? tempSSTableFile(ksname, cfname, generation) : new File(dest.filenameFor(Component.DATA));
-            SSTableWriter writer = new SSTableWriter(datafile.getAbsolutePath(), expectedSize);
+            SSTableWriter writer = new SSTableWriter(datafile.getAbsolutePath(), expectedSize, ActiveRepairService.UNREPAIRED_SSTABLE);
             while (appender.append(writer)) { /* pass */ }
             SSTableReader reader = writer.closeAndOpenReader();
             // mark all components for removal

@@ -21,7 +21,6 @@ import org.apache.cassandra.db.marshal.CollectionType;
 import org.apache.cassandra.db.marshal.ListType;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 
-
 /**
  * A single bind marker.
  */
@@ -58,7 +57,7 @@ public abstract class AbstractMarker extends Term.NonTerminal
             this.bindIndex = bindIndex;
         }
 
-        public AbstractMarker prepare(ColumnSpecification receiver) throws InvalidRequestException
+        public AbstractMarker prepare(String keyspace, ColumnSpecification receiver) throws InvalidRequestException
         {
             if (!(receiver.type instanceof CollectionType))
                 return new Constants.Marker(bindIndex, receiver);
@@ -72,9 +71,9 @@ public abstract class AbstractMarker extends Term.NonTerminal
             throw new AssertionError();
         }
 
-        public boolean isAssignableTo(ColumnSpecification receiver)
+        public AssignmentTestable.TestResult testAssignment(String keyspace, ColumnSpecification receiver)
         {
-            return true;
+            return AssignmentTestable.TestResult.WEAKLY_ASSIGNABLE;
         }
 
         @Override
@@ -84,7 +83,12 @@ public abstract class AbstractMarker extends Term.NonTerminal
         }
     }
 
-    // A raw that stands for multiple values, i.e. when we have 'IN ?'
+    /**
+     * A raw placeholder for multiple values of the same type for a single column.
+     * For example, "SELECT ... WHERE user_id IN ?'.
+     *
+     * Because a single type is used, a List is used to represent the values.
+     */
     public static class INRaw extends Raw
     {
         public INRaw(int bindIndex)
@@ -99,11 +103,8 @@ public abstract class AbstractMarker extends Term.NonTerminal
         }
 
         @Override
-        public AbstractMarker prepare(ColumnSpecification receiver) throws InvalidRequestException
+        public AbstractMarker prepare(String keyspace, ColumnSpecification receiver) throws InvalidRequestException
         {
-            if (receiver.type instanceof CollectionType)
-                throw new InvalidRequestException("Invalid IN relation on collection column");
-
             return new Lists.Marker(bindIndex, makeInReceiver(receiver));
         }
     }

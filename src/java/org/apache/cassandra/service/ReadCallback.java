@@ -21,7 +21,7 @@ import java.net.InetAddress;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
@@ -41,7 +41,7 @@ import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.cassandra.utils.FBUtilities;
-import org.apache.cassandra.utils.SimpleCondition;
+import org.apache.cassandra.utils.concurrent.SimpleCondition;
 
 public class ReadCallback<TMessage, TResolved> implements IAsyncCallback<TMessage>
 {
@@ -54,7 +54,9 @@ public class ReadCallback<TMessage, TResolved> implements IAsyncCallback<TMessag
     final List<InetAddress> endpoints;
     private final IReadCommand command;
     private final ConsistencyLevel consistencyLevel;
-    private final AtomicInteger received = new AtomicInteger(0);
+    private static final AtomicIntegerFieldUpdater<ReadCallback> recievedUpdater
+            = AtomicIntegerFieldUpdater.newUpdater(ReadCallback.class, "received");
+    private volatile int received = 0;
     private final Keyspace keyspace; // TODO push this into ConsistencyLevel?
 
     /**
@@ -76,6 +78,8 @@ public class ReadCallback<TMessage, TResolved> implements IAsyncCallback<TMessag
         this.resolver = resolver;
         this.start = System.nanoTime();
         this.endpoints = endpoints;
+        // we don't support read repair (or rapid read protection) for range scans yet (CASSANDRA-6897)
+        assert !(resolver instanceof RangeSliceResponseResolver) || blockfor >= endpoints.size();
     }
 
     public boolean await(long timePastStart, TimeUnit unit)
@@ -95,7 +99,9 @@ public class ReadCallback<TMessage, TResolved> implements IAsyncCallback<TMessag
     {
         if (!await(command.getTimeout(), TimeUnit.MILLISECONDS))
         {
-            ReadTimeoutException ex = new ReadTimeoutException(consistencyLevel, received.get(), blockfor, resolver.isDataPresent());
+            // Same as for writes, see AbstractWriteResponseHandler
+            ReadTimeoutException ex = new ReadTimeoutException(consistencyLevel, received, blockfor, resolver.isDataPresent());
+
             if (logger.isDebugEnabled())
                 logger.debug("Read timeout: {}", ex.toString());
             throw ex;
@@ -108,12 +114,15 @@ public class ReadCallback<TMessage, TResolved> implements IAsyncCallback<TMessag
     {
         resolver.preprocess(message);
         int n = waitingFor(message)
-              ? received.incrementAndGet()
-              : received.get();
+              ? recievedUpdater.incrementAndGet(this)
+              : received;
         if (n >= blockfor && resolver.isDataPresent())
         {
             condition.signalAll();
-            maybeResolveForRepair();
+            // kick off a background digest comparison if this is a result that (may have) arrived after
+            // the original resolve that get() kicks off as soon as the condition is signaled
+            if (blockfor < endpoints.size() && n == endpoints.size())
+                StageManager.getStage(Stage.READ_REPAIR).execute(new AsyncRepairRunner());
         }
     }
 
@@ -132,7 +141,7 @@ public class ReadCallback<TMessage, TResolved> implements IAsyncCallback<TMessag
      */
     public int getReceivedCount()
     {
-        return received.get();
+        return received;
     }
 
     public void response(TMessage result)
@@ -143,19 +152,6 @@ public class ReadCallback<TMessage, TResolved> implements IAsyncCallback<TMessag
                                                        MessagingService.Verb.INTERNAL_RESPONSE,
                                                        MessagingService.current_version);
         response(message);
-    }
-
-    /**
-     * Check digests in the background on the Repair stage if we've received replies
-     * too all the requests we sent.
-     */
-    protected void maybeResolveForRepair()
-    {
-        if (blockfor < endpoints.size() && received.get() == endpoints.size())
-        {
-            assert resolver.isDataPresent();
-            StageManager.getStage(Stage.READ_REPAIR).execute(new AsyncRepairRunner());
-        }
     }
 
     public void assureSufficientLiveNodes() throws UnavailableException
@@ -189,7 +185,7 @@ public class ReadCallback<TMessage, TResolved> implements IAsyncCallback<TMessag
                 ReadRepairMetrics.repairedBackground.mark();
                 
                 ReadCommand readCommand = (ReadCommand) command;
-                final RowDataResolver repairResolver = new RowDataResolver(readCommand.ksName, readCommand.key, readCommand.filter(), readCommand.timestamp);
+                final RowDataResolver repairResolver = new RowDataResolver(readCommand.ksName, readCommand.key, readCommand.filter(), readCommand.timestamp, endpoints.size());
                 AsyncRepairCallback repairHandler = new AsyncRepairCallback(repairResolver, endpoints.size());
 
                 MessageOut<ReadCommand> message = ((ReadCommand) command).createMessage();

@@ -17,9 +17,14 @@
  */
 package org.apache.cassandra.io.util;
 
-import sun.misc.Unsafe;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 
 import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.utils.FastByteOperations;
+import org.apache.cassandra.utils.memory.MemoryUtil;
+import sun.misc.Unsafe;
+import sun.nio.ch.DirectBuffer;
 
 /**
  * An off-heap region of memory that must be manually free'd when no longer needed.
@@ -29,6 +34,16 @@ public class Memory
     private static final Unsafe unsafe = NativeAllocator.unsafe;
     private static final IAllocator allocator = DatabaseDescriptor.getoffHeapMemoryAllocator();
     private static final long BYTE_ARRAY_BASE_OFFSET = unsafe.arrayBaseOffset(byte[].class);
+
+    private static final boolean bigEndian = ByteOrder.nativeOrder().equals(ByteOrder.BIG_ENDIAN);
+    private static final boolean unaligned;
+
+    static
+    {
+        String arch = System.getProperty("os.arch");
+        unaligned = arch.equals("i386") || arch.equals("x86")
+                    || arch.equals("amd64") || arch.equals("x86_64");
+    }
 
     protected long peer;
     // size of the memory region
@@ -64,15 +79,91 @@ public class Memory
     public void setLong(long offset, long l)
     {
         checkPosition(offset);
-        unsafe.putLong(peer + offset, l);
+        if (unaligned)
+        {
+            unsafe.putLong(peer + offset, l);
+        }
+        else
+        {
+            putLongByByte(peer + offset, l);
+        }
+    }
+
+    private void putLongByByte(long address, long value)
+    {
+        if (bigEndian)
+        {
+            unsafe.putByte(address, (byte) (value >> 56));
+            unsafe.putByte(address + 1, (byte) (value >> 48));
+            unsafe.putByte(address + 2, (byte) (value >> 40));
+            unsafe.putByte(address + 3, (byte) (value >> 32));
+            unsafe.putByte(address + 4, (byte) (value >> 24));
+            unsafe.putByte(address + 5, (byte) (value >> 16));
+            unsafe.putByte(address + 6, (byte) (value >> 8));
+            unsafe.putByte(address + 7, (byte) (value));
+        }
+        else
+        {
+            unsafe.putByte(address + 7, (byte) (value >> 56));
+            unsafe.putByte(address + 6, (byte) (value >> 48));
+            unsafe.putByte(address + 5, (byte) (value >> 40));
+            unsafe.putByte(address + 4, (byte) (value >> 32));
+            unsafe.putByte(address + 3, (byte) (value >> 24));
+            unsafe.putByte(address + 2, (byte) (value >> 16));
+            unsafe.putByte(address + 1, (byte) (value >> 8));
+            unsafe.putByte(address, (byte) (value));
+        }
     }
 
     public void setInt(long offset, int l)
     {
         checkPosition(offset);
-        unsafe.putInt(peer + offset, l);
+        if (unaligned)
+        {
+            unsafe.putInt(peer + offset, l);
+        }
+        else
+        {
+            putIntByByte(peer + offset, l);
+        }
     }
 
+    private void putIntByByte(long address, int value)
+    {
+        if (bigEndian)
+        {
+            unsafe.putByte(address, (byte) (value >> 24));
+            unsafe.putByte(address + 1, (byte) (value >> 16));
+            unsafe.putByte(address + 2, (byte) (value >> 8));
+            unsafe.putByte(address + 3, (byte) (value));
+        }
+        else
+        {
+            unsafe.putByte(address + 3, (byte) (value >> 24));
+            unsafe.putByte(address + 2, (byte) (value >> 16));
+            unsafe.putByte(address + 1, (byte) (value >> 8));
+            unsafe.putByte(address, (byte) (value));
+        }
+    }
+
+    public void setBytes(long memoryOffset, ByteBuffer buffer)
+    {
+        if (buffer == null)
+            throw new NullPointerException();
+        else if (buffer.remaining() == 0)
+            return;
+        checkPosition(memoryOffset + buffer.remaining());
+        if (buffer.hasArray())
+        {
+            setBytes(memoryOffset, buffer.array(), buffer.arrayOffset() + buffer.position(), buffer.remaining());
+        }
+        else if (buffer instanceof DirectBuffer)
+        {
+            unsafe.copyMemory(((DirectBuffer) buffer).address() + buffer.position(), peer + memoryOffset, buffer.remaining());
+        }
+        else
+            throw new IllegalStateException();
+    }
     /**
      * Transfers count bytes from buffer to Memory
      *
@@ -108,13 +199,57 @@ public class Memory
     public long getLong(long offset)
     {
         checkPosition(offset);
-        return unsafe.getLong(peer + offset);
+        if (unaligned) {
+            return unsafe.getLong(peer + offset);
+        } else {
+            return getLongByByte(peer + offset);
+        }
+    }
+
+    private long getLongByByte(long address) {
+        if (bigEndian) {
+            return  (((long) unsafe.getByte(address    )       ) << 56) |
+                    (((long) unsafe.getByte(address + 1) & 0xff) << 48) |
+                    (((long) unsafe.getByte(address + 2) & 0xff) << 40) |
+                    (((long) unsafe.getByte(address + 3) & 0xff) << 32) |
+                    (((long) unsafe.getByte(address + 4) & 0xff) << 24) |
+                    (((long) unsafe.getByte(address + 5) & 0xff) << 16) |
+                    (((long) unsafe.getByte(address + 6) & 0xff) <<  8) |
+                    (((long) unsafe.getByte(address + 7) & 0xff)      );
+        } else {
+            return  (((long) unsafe.getByte(address + 7)       ) << 56) |
+                    (((long) unsafe.getByte(address + 6) & 0xff) << 48) |
+                    (((long) unsafe.getByte(address + 5) & 0xff) << 40) |
+                    (((long) unsafe.getByte(address + 4) & 0xff) << 32) |
+                    (((long) unsafe.getByte(address + 3) & 0xff) << 24) |
+                    (((long) unsafe.getByte(address + 2) & 0xff) << 16) |
+                    (((long) unsafe.getByte(address + 1) & 0xff) <<  8) |
+                    (((long) unsafe.getByte(address    ) & 0xff)      );
+        }
     }
 
     public int getInt(long offset)
     {
         checkPosition(offset);
-        return unsafe.getInt(peer + offset);
+        if (unaligned) {
+            return unsafe.getInt(peer + offset);
+        } else {
+            return getIntByByte(peer + offset);
+        }
+    }
+
+    private int getIntByByte(long address) {
+        if (bigEndian) {
+            return  (((int) unsafe.getByte(address    )       ) << 24) |
+                    (((int) unsafe.getByte(address + 1) & 0xff) << 16) |
+                    (((int) unsafe.getByte(address + 2) & 0xff) << 8 ) |
+                    (((int) unsafe.getByte(address + 3) & 0xff)      );
+        } else {
+            return  (((int) unsafe.getByte(address + 3)       ) << 24) |
+                    (((int) unsafe.getByte(address + 2) & 0xff) << 16) |
+                    (((int) unsafe.getByte(address + 1) & 0xff) <<  8) |
+                    (((int) unsafe.getByte(address    ) & 0xff)      );
+        }
     }
 
     /**
@@ -138,13 +273,25 @@ public class Memory
         long end = memoryOffset + count;
         checkPosition(end - 1);
 
-        unsafe.copyMemory(null, peer + memoryOffset, buffer, BYTE_ARRAY_BASE_OFFSET + bufferOffset, count);
+        FastByteOperations.UnsafeOperations.copy(null, peer + memoryOffset, buffer, bufferOffset, count);
     }
 
     private void checkPosition(long offset)
     {
         assert peer != 0 : "Memory was freed";
         assert offset >= 0 && offset < size : "Illegal offset: " + offset + ", size: " + size;
+    }
+
+    public void put(long trgOffset, Memory memory, long srcOffset, long size)
+    {
+        unsafe.copyMemory(memory.peer + srcOffset, peer + trgOffset, size);
+    }
+
+    public Memory copy(long newSize)
+    {
+        Memory copy = Memory.allocate(newSize);
+        copy.put(0, this, 0, Math.min(size(), newSize));
+        return copy;
     }
 
     public void free()
@@ -172,5 +319,21 @@ public class Memory
             return true;
         return false;
     }
-}
 
+    public ByteBuffer[] asByteBuffers()
+    {
+        if (size() == 0)
+            return new ByteBuffer[0];
+
+        ByteBuffer[] result = new ByteBuffer[(int) (size() / Integer.MAX_VALUE) + 1];
+        long offset = 0;
+        int size = (int) (size() / result.length);
+        for (int i = 0 ; i < result.length - 1 ; i++)
+        {
+            result[i] = MemoryUtil.getByteBuffer(peer + offset, size);
+            offset += size;
+        }
+        result[result.length - 1] = MemoryUtil.getByteBuffer(peer + offset, (int) (size() - offset));
+        return result;
+    }
+}

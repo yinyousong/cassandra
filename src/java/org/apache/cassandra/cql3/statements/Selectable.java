@@ -21,6 +21,7 @@ package org.apache.cassandra.cql3.statements;
 import java.util.List;
 
 import org.apache.cassandra.cql3.ColumnIdentifier;
+import org.apache.cassandra.cql3.functions.FunctionName;
 
 public interface Selectable
 {
@@ -44,10 +45,10 @@ public interface Selectable
 
     public static class WithFunction implements Selectable
     {
-        public final String functionName;
+        public final FunctionName functionName;
         public final List<Selectable> args;
 
-        public WithFunction(String functionName, List<Selectable> args)
+        public WithFunction(FunctionName functionName, List<Selectable> args)
         {
             this.functionName = functionName;
             this.args = args;
@@ -60,7 +61,8 @@ public interface Selectable
             sb.append(functionName).append("(");
             for (int i = 0; i < args.size(); i++)
             {
-                if (i > 0) sb.append(", ");
+                if (i > 0)
+                    sb.append(", ");
                 sb.append(args.get(i));
             }
             return sb.append(")").toString();

@@ -24,7 +24,9 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ThreadLocalRandom;
 
+import org.apache.cassandra.db.BufferDecoratedKey;
 import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.db.marshal.LongType;
@@ -32,6 +34,7 @@ import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.MurmurHash;
+import org.apache.cassandra.utils.ObjectSizes;
 
 /**
  * This class generates a BigIntegerToken using a Murmur3 hash.
@@ -41,9 +44,11 @@ public class Murmur3Partitioner extends AbstractPartitioner<LongToken>
     public static final LongToken MINIMUM = new LongToken(Long.MIN_VALUE);
     public static final long MAXIMUM = Long.MAX_VALUE;
 
+    private static final int HEAP_SIZE = (int) ObjectSizes.measureDeep(MINIMUM);
+
     public DecoratedKey decorateKey(ByteBuffer key)
     {
-        return new DecoratedKey(getToken(key), key);
+        return new BufferDecoratedKey(getToken(key), key);
     }
 
     public Token midpoint(Token lToken, Token rToken)
@@ -89,13 +94,19 @@ public class Murmur3Partitioner extends AbstractPartitioner<LongToken>
         if (key.remaining() == 0)
             return MINIMUM;
 
-        long hash = MurmurHash.hash3_x64_128(key, key.position(), key.remaining(), 0)[0];
-        return new LongToken(normalize(hash));
+        long[] hash = new long[2];
+        MurmurHash.hash3_x64_128(key, key.position(), key.remaining(), 0, hash);
+        return new LongToken(normalize(hash[0]));
+    }
+
+    public long getHeapSizeOf(LongToken token)
+    {
+        return HEAP_SIZE;
     }
 
     public LongToken getRandomToken()
     {
-        return new LongToken(normalize(FBUtilities.threadLocalRandom().nextLong()));
+        return new LongToken(normalize(ThreadLocalRandom.current().nextLong()));
     }
 
     private long normalize(long v)
@@ -180,7 +191,14 @@ public class Murmur3Partitioner extends AbstractPartitioner<LongToken>
 
         public Token<Long> fromString(String string)
         {
-            return new LongToken(Long.valueOf(string));
+            try
+            {
+                return new LongToken(Long.valueOf(string));
+            }
+            catch (NumberFormatException e)
+            {
+                throw new IllegalArgumentException(String.format("Invalid token for Murmur3Partitioner. Got %s but expected a long value (unsigned 8 bytes integer).", string));
+            }
         }
     };
 

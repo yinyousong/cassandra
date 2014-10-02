@@ -19,17 +19,14 @@
 package org.apache.cassandra.tools;
 
 import java.io.File;
-import java.io.IOException;
 import java.util.*;
 
 import org.apache.commons.cli.*;
 
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Directories;
 import org.apache.cassandra.db.Keyspace;
-import org.apache.cassandra.db.compaction.LeveledManifest;
 import org.apache.cassandra.db.compaction.SSTableSplitter;
 import org.apache.cassandra.io.sstable.*;
 import org.apache.cassandra.utils.Pair;
@@ -47,7 +44,7 @@ public class StandaloneSplitter
     private static final String NO_SNAPSHOT_OPTION = "no-snapshot";
     private static final String SIZE_OPTION = "size";
 
-    public static void main(String args[]) throws IOException
+    public static void main(String args[])
     {
         Options options = Options.parseArgs(args);
         try
@@ -81,7 +78,7 @@ public class StandaloneSplitter
                 if (cfName == null)
                     cfName = desc.cfname;
                 else if (!cfName.equals(desc.cfname))
-                    throw new IllegalArgumentException("All sstables must be part of the same column family");
+                    throw new IllegalArgumentException("All sstables must be part of the same table");
 
                 Set<Component> components = new HashSet<Component>(Arrays.asList(new Component[]{
                     Component.DATA,
@@ -142,10 +139,6 @@ public class StandaloneSplitter
                 try
                 {
                     new SSTableSplitter(cfs, sstable, options.sizeInMB).split();
-
-                    // Remove the sstable
-                    sstable.markObsolete();
-                    sstable.releaseReference();
                 }
                 catch (Exception e)
                 {
@@ -208,7 +201,7 @@ public class StandaloneSplitter
                 opts.sizeInMB = DEFAULT_SSTABLE_SIZE;
 
                 if (cmd.hasOption(SIZE_OPTION))
-                    opts.sizeInMB = Integer.valueOf(cmd.getOptionValue(SIZE_OPTION));
+                    opts.sizeInMB = Integer.parseInt(cmd.getOptionValue(SIZE_OPTION));
 
                 return opts;
             }

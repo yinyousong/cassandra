@@ -18,7 +18,6 @@
 package org.apache.cassandra.io.compress;
 
 import java.io.DataInput;
-import java.io.DataOutput;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -30,12 +29,14 @@ import java.util.Set;
 
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
+import org.apache.cassandra.config.CFMetaData;
 import org.apache.commons.lang3.builder.EqualsBuilder;
 import org.apache.commons.lang3.builder.HashCodeBuilder;
 
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.io.IVersionedSerializer;
+import org.apache.cassandra.io.util.DataOutputPlus;
 
 public class CompressionParameters
 {
@@ -53,6 +54,7 @@ public class CompressionParameters
     private final Integer chunkLength;
     private volatile double crcCheckChance;
     public final Map<String, String> otherOptions; // Unrecognized options, can be use by the compressor
+    private CFMetaData liveMetadata;
 
     public static CompressionParameters create(Map<? extends CharSequence, ? extends CharSequence> opts) throws ConfigurationException
     {
@@ -101,15 +103,24 @@ public class CompressionParameters
         }
     }
 
+    public void setLiveMetadata(final CFMetaData liveMetadata)
+    {
+        assert this.liveMetadata == null || this.liveMetadata == liveMetadata;
+        this.liveMetadata = liveMetadata;
+    }
+
     public void setCrcCheckChance(double crcCheckChance) throws ConfigurationException
     {
         validateCrcCheckChance(crcCheckChance);
         this.crcCheckChance = crcCheckChance;
+
+        if (liveMetadata != null)
+            liveMetadata.compressionParameters.setCrcCheckChance(crcCheckChance);
     }
 
     public double getCrcCheckChance()
     {
-        return this.crcCheckChance;
+        return liveMetadata == null ? this.crcCheckChance : liveMetadata.compressionParameters.crcCheckChance;
     }
 
     private static double parseCrcCheckChance(String crcCheckChance) throws ConfigurationException
@@ -311,7 +322,7 @@ public class CompressionParameters
 
     static class Serializer implements IVersionedSerializer<CompressionParameters>
     {
-        public void serialize(CompressionParameters parameters, DataOutput out, int version) throws IOException
+        public void serialize(CompressionParameters parameters, DataOutputPlus out, int version) throws IOException
         {
             out.writeUTF(parameters.sstableCompressor.getClass().getSimpleName());
             out.writeInt(parameters.otherOptions.size());

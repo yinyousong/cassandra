@@ -31,6 +31,7 @@ import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.io.IVersionedSerializer;
+import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.utils.FBUtilities;
 
@@ -64,7 +65,6 @@ public class VersionedValue implements Comparable<VersionedValue>
     public final static String STATUS_LEAVING = "LEAVING";
     public final static String STATUS_LEFT = "LEFT";
     public final static String STATUS_MOVING = "MOVING";
-    public final static String STATUS_RELOCATING = "RELOCATING";
 
     public final static String REMOVING_TOKEN = "removing";
     public final static String REMOVED_TOKEN = "removed";
@@ -80,7 +80,11 @@ public class VersionedValue implements Comparable<VersionedValue>
     private VersionedValue(String value, int version)
     {
         assert value != null;
-        this.value = value;
+        // blindly interning everything is somewhat suboptimal -- lots of VersionedValues are unique --
+        // but harmless, and interning the non-unique ones saves significant memory.  (Unfortunately,
+        // we don't really have enough information here in VersionedValue to tell the probably-unique
+        // values apart.)  See CASSANDRA-6410.
+        this.value = value.intern();
         this.version = version;
     }
 
@@ -164,12 +168,6 @@ public class VersionedValue implements Comparable<VersionedValue>
             return new VersionedValue(VersionedValue.STATUS_MOVING + VersionedValue.DELIMITER + partitioner.getTokenFactory().toString(token));
         }
 
-        public VersionedValue relocating(Collection<Token> srcTokens)
-        {
-            return new VersionedValue(
-                    versionString(VersionedValue.STATUS_RELOCATING, StringUtils.join(srcTokens, VersionedValue.DELIMITER)));
-        }
-
         public VersionedValue hostId(UUID hostId)
         {
             return new VersionedValue(hostId.toString());
@@ -248,7 +246,7 @@ public class VersionedValue implements Comparable<VersionedValue>
 
     private static class VersionedValueSerializer implements IVersionedSerializer<VersionedValue>
     {
-        public void serialize(VersionedValue value, DataOutput out, int version) throws IOException
+        public void serialize(VersionedValue value, DataOutputPlus out, int version) throws IOException
         {
             out.writeUTF(outValue(value, version));
             out.writeInt(value.version);

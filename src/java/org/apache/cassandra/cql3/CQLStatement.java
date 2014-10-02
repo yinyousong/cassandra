@@ -27,7 +27,7 @@ public interface CQLStatement
     /**
      * Returns the number of bound terms in this statement.
      */
-    public int getBoundsTerms();
+    public int getBoundTerms();
 
     /**
      * Perform any access verification necessary for the statement.
@@ -57,5 +57,5 @@ public interface CQLStatement
      *
      * @param state the current query state
      */
-    public ResultMessage executeInternal(QueryState state) throws RequestValidationException, RequestExecutionException;
+    public ResultMessage executeInternal(QueryState state, QueryOptions options) throws RequestValidationException, RequestExecutionException;
 }

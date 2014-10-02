@@ -27,9 +27,11 @@ import java.util.concurrent.TimeUnit;
 import com.google.common.collect.Sets;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.BeforeClass;
 import org.junit.Test;
 
 import org.apache.cassandra.SchemaLoader;
+import org.apache.cassandra.config.KSMetaData;
 import org.apache.cassandra.concurrent.Stage;
 import org.apache.cassandra.concurrent.StageManager;
 import org.apache.cassandra.config.DatabaseDescriptor;
@@ -38,17 +40,18 @@ import org.apache.cassandra.db.IMutation;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
+import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.gms.Gossiper;
 import org.apache.cassandra.locator.AbstractReplicationStrategy;
 import org.apache.cassandra.locator.TokenMetadata;
+import org.apache.cassandra.locator.SimpleStrategy;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.repair.RepairJobDesc;
 import org.apache.cassandra.utils.FBUtilities;
 
-import static org.apache.cassandra.service.ActiveRepairService.*;
 import static org.junit.Assert.assertEquals;
 
-public abstract class AntiEntropyServiceTestAbstract extends SchemaLoader
+public abstract class AntiEntropyServiceTestAbstract
 {
     // keyspace and column family to test against
     public ActiveRepairService aes;
@@ -67,11 +70,27 @@ public abstract class AntiEntropyServiceTestAbstract extends SchemaLoader
 
     public abstract List<IMutation> getWriteData();
 
+    public static final String KEYSPACE5 = "Keyspace5";
+    public static final String CF_STANDRAD1 = "Standard1";
+    public static final String CF_COUNTER = "Counter1";
+
+    @BeforeClass
+    public static void defineSchema() throws ConfigurationException
+    {
+        SchemaLoader.prepareServer();
+        SchemaLoader.createKeyspace(KEYSPACE5,
+                                    SimpleStrategy.class,
+                                    KSMetaData.optsWithRF(2),
+                                    SchemaLoader.standardCFMD(KEYSPACE5, CF_COUNTER),
+                                    SchemaLoader.standardCFMD(KEYSPACE5, CF_STANDRAD1));
+    }
+
     @Before
     public void prepare() throws Exception
     {
         if (!initialized)
         {
+            SchemaLoader.startGossiper();
             initialized = true;
 
             init();
@@ -103,7 +122,7 @@ public abstract class AntiEntropyServiceTestAbstract extends SchemaLoader
 
         local_range = StorageService.instance.getPrimaryRangesForEndpoint(keyspaceName, LOCAL).iterator().next();
 
-        desc = new RepairJobDesc(UUID.randomUUID(), keyspaceName, cfname, local_range);
+        desc = new RepairJobDesc(UUID.randomUUID(), UUID.randomUUID(), keyspaceName, cfname, local_range);
         // Set a fake session corresponding to this fake request
         ActiveRepairService.instance.submitArtificialRepairSession(desc);
     }
@@ -124,7 +143,7 @@ public abstract class AntiEntropyServiceTestAbstract extends SchemaLoader
         Set<InetAddress> neighbors = new HashSet<InetAddress>();
         for (Range<Token> range : ranges)
         {
-            neighbors.addAll(ActiveRepairService.getNeighbors(keyspaceName, range, false));
+            neighbors.addAll(ActiveRepairService.getNeighbors(keyspaceName, range, null, null));
         }
         assertEquals(expected, neighbors);
     }
@@ -147,7 +166,7 @@ public abstract class AntiEntropyServiceTestAbstract extends SchemaLoader
         Set<InetAddress> neighbors = new HashSet<InetAddress>();
         for (Range<Token> range : ranges)
         {
-            neighbors.addAll(ActiveRepairService.getNeighbors(keyspaceName, range, false));
+            neighbors.addAll(ActiveRepairService.getNeighbors(keyspaceName, range, null, null));
         }
         assertEquals(expected, neighbors);
     }
@@ -169,7 +188,7 @@ public abstract class AntiEntropyServiceTestAbstract extends SchemaLoader
         Set<InetAddress> neighbors = new HashSet<InetAddress>();
         for (Range<Token> range : ranges)
         {
-            neighbors.addAll(ActiveRepairService.getNeighbors(keyspaceName, range, true));
+            neighbors.addAll(ActiveRepairService.getNeighbors(keyspaceName, range, Arrays.asList(DatabaseDescriptor.getLocalDataCenter()), null));
         }
         assertEquals(expected, neighbors);
     }
@@ -197,9 +216,38 @@ public abstract class AntiEntropyServiceTestAbstract extends SchemaLoader
         Set<InetAddress> neighbors = new HashSet<InetAddress>();
         for (Range<Token> range : ranges)
         {
-            neighbors.addAll(ActiveRepairService.getNeighbors(keyspaceName, range, true));
+            neighbors.addAll(ActiveRepairService.getNeighbors(keyspaceName, range, Arrays.asList(DatabaseDescriptor.getLocalDataCenter()), null));
         }
         assertEquals(expected, neighbors);
+    }
+
+    @Test
+    public void testGetNeighborsTimesTwoInSpecifiedHosts() throws Throwable
+    {
+        TokenMetadata tmd = StorageService.instance.getTokenMetadata();
+
+        // generate rf*2 nodes, and ensure that only neighbors specified by the hosts are returned
+        addTokens(2 * Keyspace.open(keyspaceName).getReplicationStrategy().getReplicationFactor());
+        AbstractReplicationStrategy ars = Keyspace.open(keyspaceName).getReplicationStrategy();
+        List<InetAddress> expected = new ArrayList<>();
+        for (Range<Token> replicaRange : ars.getAddressRanges().get(FBUtilities.getBroadcastAddress()))
+        {
+            expected.addAll(ars.getRangeAddresses(tmd.cloneOnlyTokenMap()).get(replicaRange));
+        }
+
+        expected.remove(FBUtilities.getBroadcastAddress());
+        Collection<String> hosts = Arrays.asList(FBUtilities.getBroadcastAddress().getCanonicalHostName(),expected.get(0).getCanonicalHostName());
+
+       assertEquals(expected.get(0), ActiveRepairService.getNeighbors(keyspaceName, StorageService.instance.getLocalRanges(keyspaceName).iterator().next(), null, hosts).iterator().next());
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void testGetNeighborsSpecifiedHostsWithNoLocalHost() throws Throwable
+    {
+        addTokens(2 * Keyspace.open(keyspaceName).getReplicationStrategy().getReplicationFactor());
+        //Dont give local endpoint
+        Collection<String> hosts = Arrays.asList("127.0.0.3");
+        ActiveRepairService.getNeighbors(keyspaceName, StorageService.instance.getLocalRanges(keyspaceName).iterator().next(), null, hosts);
     }
 
     Set<InetAddress> addTokens(int max) throws Throwable

@@ -21,7 +21,6 @@ import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.auth.Permission;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.Schema;
-import org.apache.cassandra.cql3.KSPropDefs;
 import org.apache.cassandra.exceptions.AlreadyExistsException;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.exceptions.RequestValidationException;
@@ -31,7 +30,7 @@ import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.service.MigrationManager;
 import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.thrift.ThriftValidation;
-import org.apache.cassandra.transport.messages.ResultMessage;
+import org.apache.cassandra.transport.Event;
 
 /** A <code>CREATE KEYSPACE</code> statement parsed from a CQL query. */
 public class CreateKeyspaceStatement extends SchemaAlteringStatement
@@ -98,21 +97,23 @@ public class CreateKeyspaceStatement extends SchemaAlteringStatement
                                                                 attrs.getReplicationOptions());
     }
 
-    public void announceMigration() throws RequestValidationException
+    public boolean announceMigration(boolean isLocalOnly) throws RequestValidationException
     {
         try
         {
-            MigrationManager.announceNewKeyspace(attrs.asKSMetadata(name));
+            MigrationManager.announceNewKeyspace(attrs.asKSMetadata(name), isLocalOnly);
+            return true;
         }
         catch (AlreadyExistsException e)
         {
-            if (!ifNotExists)
-                throw e;
+            if (ifNotExists)
+                return false;
+            throw e;
         }
     }
 
-    public ResultMessage.SchemaChange.Change changeType()
+    public Event.SchemaChange changeEvent()
     {
-        return ResultMessage.SchemaChange.Change.CREATED;
+        return new Event.SchemaChange(Event.SchemaChange.Change.CREATED, keyspace());
     }
 }

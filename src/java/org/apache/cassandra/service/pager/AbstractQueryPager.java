@@ -17,11 +17,12 @@
  */
 package org.apache.cassandra.service.pager;
 
-import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Iterator;
+
+import com.google.common.annotations.VisibleForTesting;
 
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.Schema;
@@ -30,9 +31,13 @@ import org.apache.cassandra.db.filter.ColumnCounter;
 import org.apache.cassandra.db.filter.IDiskAtomFilter;
 import org.apache.cassandra.exceptions.RequestExecutionException;
 import org.apache.cassandra.exceptions.RequestValidationException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 abstract class AbstractQueryPager implements QueryPager
 {
+    private static final Logger logger = LoggerFactory.getLogger(AbstractQueryPager.class);
+
     private final ConsistencyLevel consistencyLevel;
     private final boolean localQuery;
 
@@ -40,9 +45,9 @@ abstract class AbstractQueryPager implements QueryPager
     protected final IDiskAtomFilter columnFilter;
     private final long timestamp;
 
-    private volatile int remaining;
-    private volatile boolean exhausted;
-    private volatile boolean lastWasRecorded;
+    private int remaining;
+    private boolean exhausted;
+    private boolean lastWasRecorded;
 
     protected AbstractQueryPager(ConsistencyLevel consistencyLevel,
                                  int toFetch,
@@ -52,15 +57,26 @@ abstract class AbstractQueryPager implements QueryPager
                                  IDiskAtomFilter columnFilter,
                                  long timestamp)
     {
+        this(consistencyLevel, toFetch, localQuery, Schema.instance.getCFMetaData(keyspace, columnFamily), columnFilter, timestamp);
+    }
+
+    protected AbstractQueryPager(ConsistencyLevel consistencyLevel,
+                                 int toFetch,
+                                 boolean localQuery,
+                                 CFMetaData cfm,
+                                 IDiskAtomFilter columnFilter,
+                                 long timestamp)
+    {
         this.consistencyLevel = consistencyLevel;
         this.localQuery = localQuery;
 
-        this.cfm = Schema.instance.getCFMetaData(keyspace, columnFamily);
+        this.cfm = cfm;
         this.columnFilter = columnFilter;
         this.timestamp = timestamp;
 
         this.remaining = toFetch;
     }
+
 
     public List<Row> fetchPage(int pageSize) throws RequestValidationException, RequestExecutionException
     {
@@ -72,17 +88,32 @@ abstract class AbstractQueryPager implements QueryPager
 
         if (rows.isEmpty())
         {
+            logger.debug("Got empty set of rows, considering pager exhausted");
             exhausted = true;
             return Collections.emptyList();
         }
 
         int liveCount = getPageLiveCount(rows);
+        logger.debug("Fetched {} live rows", liveCount);
+
+        // Because SP.getRangeSlice doesn't trim the result (see SP.trim()), liveCount may be greater than what asked
+        // (currentPageSize). This would throw off the paging logic so we trim the excess. It's not extremely efficient
+        // but most of the time there should be nothing or very little to trim.
+        if (liveCount > currentPageSize)
+        {
+            rows = discardLast(rows, liveCount - currentPageSize);
+            liveCount = currentPageSize;
+        }
+
         remaining -= liveCount;
 
         // If we've got less than requested, there is no more query to do (but
         // we still need to return the current page)
         if (liveCount < currentPageSize)
+        {
+            logger.debug("Got result ({}) smaller than page size ({}), considering pager exhausted", liveCount, currentPageSize);
             exhausted = true;
+        }
 
         // If it's not the first query and the first column is the last one returned (likely
         // but not certain since paging can race with deletes/expiration), then remove the
@@ -101,6 +132,8 @@ abstract class AbstractQueryPager implements QueryPager
             remaining++;
         }
 
+        logger.debug("Remaining rows to page: {}", remaining);
+
         if (!isExhausted())
             lastWasRecorded = recordLast(rows.get(rows.size() - 1));
 
@@ -111,12 +144,12 @@ abstract class AbstractQueryPager implements QueryPager
     {
         for (Row row : result)
         {
-            if (row.cf == null || row.cf.getColumnCount() == 0)
+            if (row.cf == null || !row.cf.hasColumns())
             {
                 List<Row> newResult = new ArrayList<Row>(result.size() - 1);
                 for (Row row2 : result)
                 {
-                    if (row2.cf == null || row2.cf.getColumnCount() == 0)
+                    if (row2.cf == null || !row2.cf.hasColumns())
                         continue;
 
                     newResult.add(row2);
@@ -165,32 +198,80 @@ abstract class AbstractQueryPager implements QueryPager
 
     private List<Row> discardFirst(List<Row> rows)
     {
-        Row first = rows.get(0);
-        ColumnFamily newCf = isReversed()
-                           ? discardLast(first.cf)
-                           : discardFirst(first.cf);
+        return discardFirst(rows, 1);
+    }
 
-        int count = newCf.getColumnCount();
-        List<Row> newRows = new ArrayList<Row>(count == 0 ? rows.size() - 1 : rows.size());
+    @VisibleForTesting
+    List<Row> discardFirst(List<Row> rows, int toDiscard)
+    {
+        if (toDiscard == 0 || rows.isEmpty())
+            return rows;
+
+        int i = 0;
+        DecoratedKey firstKey = null;
+        ColumnFamily firstCf = null;
+        while (toDiscard > 0 && i < rows.size())
+        {
+            Row first = rows.get(i++);
+            firstKey = first.key;
+            firstCf = first.cf.cloneMeShallow();
+            toDiscard -= isReversed()
+                       ? discardLast(first.cf, toDiscard, firstCf)
+                       : discardFirst(first.cf, toDiscard, firstCf);
+        }
+
+        // If there is less live data than to discard, all is discarded
+        if (toDiscard > 0)
+            return Collections.<Row>emptyList();
+
+        // i is the index of the first row that we are sure to keep. On top of that,
+        // we also keep firstCf is it hasn't been fully emptied by the last iteration above.
+        int count = firstCf.getColumnCount();
+        int newSize = rows.size() - (count == 0 ? i : i - 1);
+        List<Row> newRows = new ArrayList<Row>(newSize);
         if (count != 0)
-            newRows.add(new Row(first.key, newCf));
-        newRows.addAll(rows.subList(1, rows.size()));
+            newRows.add(new Row(firstKey, firstCf));
+        newRows.addAll(rows.subList(i, rows.size()));
 
         return newRows;
     }
 
     private List<Row> discardLast(List<Row> rows)
     {
-        Row last = rows.get(rows.size() - 1);
-        ColumnFamily newCf = isReversed()
-                           ? discardFirst(last.cf)
-                           : discardLast(last.cf);
+        return discardLast(rows, 1);
+    }
 
-        int count = newCf.getColumnCount();
-        List<Row> newRows = new ArrayList<Row>(count == 0 ? rows.size() - 1 : rows.size());
-        newRows.addAll(rows.subList(0, rows.size() - 1));
+    @VisibleForTesting
+    List<Row> discardLast(List<Row> rows, int toDiscard)
+    {
+        if (toDiscard == 0 || rows.isEmpty())
+            return rows;
+
+        int i = rows.size()-1;
+        DecoratedKey lastKey = null;
+        ColumnFamily lastCf = null;
+        while (toDiscard > 0 && i >= 0)
+        {
+            Row last = rows.get(i--);
+            lastKey = last.key;
+            lastCf = last.cf.cloneMeShallow();
+            toDiscard -= isReversed()
+                       ? discardFirst(last.cf, toDiscard, lastCf)
+                       : discardLast(last.cf, toDiscard, lastCf);
+        }
+
+        // If there is less live data than to discard, all is discarded
+        if (toDiscard > 0)
+            return Collections.<Row>emptyList();
+
+        // i is the index of the last row that we are sure to keep. On top of that,
+        // we also keep lastCf is it hasn't been fully emptied by the last iteration above.
+        int count = lastCf.getColumnCount();
+        int newSize = count == 0 ? i+1 : i+2;
+        List<Row> newRows = new ArrayList<Row>(newSize);
+        newRows.addAll(rows.subList(0, i+1));
         if (count != 0)
-            newRows.add(new Row(last.key, newCf));
+            newRows.add(new Row(lastKey, lastCf));
 
         return newRows;
     }
@@ -203,73 +284,71 @@ abstract class AbstractQueryPager implements QueryPager
         return count;
     }
 
-    private ColumnFamily discardFirst(ColumnFamily cf)
+    private int discardFirst(ColumnFamily cf, int toDiscard, ColumnFamily newCf)
     {
         boolean isReversed = isReversed();
         DeletionInfo.InOrderTester tester = cf.deletionInfo().inOrderTester(isReversed);
         return isReversed
-             ? discardTail(cf, cf.reverseIterator(), tester)
-             : discardHead(cf, cf.iterator(), tester);
+             ? discardTail(cf, toDiscard, newCf, cf.reverseIterator(), tester)
+             : discardHead(cf, toDiscard, newCf, cf.iterator(), tester);
     }
 
-    private ColumnFamily discardLast(ColumnFamily cf)
+    private int discardLast(ColumnFamily cf, int toDiscard, ColumnFamily newCf)
     {
         boolean isReversed = isReversed();
         DeletionInfo.InOrderTester tester = cf.deletionInfo().inOrderTester(isReversed);
         return isReversed
-             ? discardHead(cf, cf.reverseIterator(), tester)
-             : discardTail(cf, cf.iterator(), tester);
+             ? discardHead(cf, toDiscard, newCf, cf.reverseIterator(), tester)
+             : discardTail(cf, toDiscard, newCf, cf.iterator(), tester);
     }
 
-    private ColumnFamily discardHead(ColumnFamily cf, Iterator<Column> iter, DeletionInfo.InOrderTester tester)
+    private int discardHead(ColumnFamily cf, int toDiscard, ColumnFamily copy, Iterator<Cell> iter, DeletionInfo.InOrderTester tester)
     {
-        ColumnFamily copy = cf.cloneMeShallow();
         ColumnCounter counter = columnCounter();
 
-        // Discard the first live
+        // Discard the first 'toDiscard' live
         while (iter.hasNext())
         {
-            Column c = iter.next();
+            Cell c = iter.next();
             counter.count(c, tester);
-            if (counter.live() > 1)
+            if (counter.live() > toDiscard)
             {
                 copy.addColumn(c);
                 while (iter.hasNext())
                     copy.addColumn(iter.next());
             }
         }
-        return copy;
+        return Math.min(counter.live(), toDiscard);
     }
 
-    private ColumnFamily discardTail(ColumnFamily cf, Iterator<Column> iter, DeletionInfo.InOrderTester tester)
+    private int discardTail(ColumnFamily cf, int toDiscard, ColumnFamily copy, Iterator<Cell> iter, DeletionInfo.InOrderTester tester)
     {
-        ColumnFamily copy = cf.cloneMeShallow();
         // Redoing the counting like that is not extremely efficient.
         // This is called only for reversed slices or in the case of a race between
         // paging and a deletion (pretty unlikely), so this is probably acceptable.
         int liveCount = columnCounter().countAll(cf).live();
 
         ColumnCounter counter = columnCounter();
-        // Discard the first live
+        // Discard the last 'toDiscard' live (so stop adding as sound as we're past 'liveCount - toDiscard')
         while (iter.hasNext())
         {
-            Column c = iter.next();
+            Cell c = iter.next();
             counter.count(c, tester);
-            if (counter.live() >= liveCount)
+            if (counter.live() > liveCount - toDiscard)
                 break;
 
             copy.addColumn(c);
         }
-        return copy;
+        return Math.min(liveCount, toDiscard);
     }
 
-    protected static ByteBuffer firstName(ColumnFamily cf)
+    protected static Cell firstCell(ColumnFamily cf)
     {
-        return cf.iterator().next().name();
+        return cf.iterator().next();
     }
 
-    protected static ByteBuffer lastName(ColumnFamily cf)
+    protected static Cell lastCell(ColumnFamily cf)
     {
-        return cf.getReverseSortedColumns().iterator().next().name();
+        return cf.getReverseSortedColumns().iterator().next();
     }
 }

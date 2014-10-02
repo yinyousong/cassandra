@@ -18,7 +18,6 @@
 package org.apache.cassandra.db;
 
 import java.io.DataInput;
-import java.io.DataOutput;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
@@ -31,6 +30,7 @@ import org.apache.cassandra.db.filter.ExtendedFilter;
 import org.apache.cassandra.db.filter.IDiskAtomFilter;
 import org.apache.cassandra.dht.AbstractBounds;
 import org.apache.cassandra.io.IVersionedSerializer;
+import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.service.pager.Pageable;
@@ -151,13 +151,15 @@ public class RangeSliceCommand extends AbstractRangeCommand implements Pageable
 
 class RangeSliceCommandSerializer implements IVersionedSerializer<RangeSliceCommand>
 {
-    public void serialize(RangeSliceCommand sliceCommand, DataOutput out, int version) throws IOException
+    public void serialize(RangeSliceCommand sliceCommand, DataOutputPlus out, int version) throws IOException
     {
         out.writeUTF(sliceCommand.keyspace);
         out.writeUTF(sliceCommand.columnFamily);
         out.writeLong(sliceCommand.timestamp);
 
-        IDiskAtomFilter.Serializer.instance.serialize(sliceCommand.predicate, out, version);
+        CFMetaData metadata = Schema.instance.getCFMetaData(sliceCommand.keyspace, sliceCommand.columnFamily);
+
+        metadata.comparator.diskAtomFilterSerializer().serialize(sliceCommand.predicate, out, version);
 
         if (sliceCommand.rowFilter == null)
         {
@@ -187,7 +189,7 @@ class RangeSliceCommandSerializer implements IVersionedSerializer<RangeSliceComm
 
         CFMetaData metadata = Schema.instance.getCFMetaData(keyspace, columnFamily);
 
-        IDiskAtomFilter predicate = IDiskAtomFilter.Serializer.instance.deserialize(in, version, metadata.comparator);
+        IDiskAtomFilter predicate = metadata.comparator.diskAtomFilterSerializer().deserialize(in, version);
 
         List<IndexExpression> rowFilter;
         int filterCount = in.readInt();
@@ -214,9 +216,11 @@ class RangeSliceCommandSerializer implements IVersionedSerializer<RangeSliceComm
         size += TypeSizes.NATIVE.sizeof(rsc.columnFamily);
         size += TypeSizes.NATIVE.sizeof(rsc.timestamp);
 
+        CFMetaData metadata = Schema.instance.getCFMetaData(rsc.keyspace, rsc.columnFamily);
+
         IDiskAtomFilter filter = rsc.predicate;
 
-        size += IDiskAtomFilter.Serializer.instance.serializedSize(filter, version);
+        size += metadata.comparator.diskAtomFilterSerializer().serializedSize(filter, version);
 
         if (rsc.rowFilter == null)
         {

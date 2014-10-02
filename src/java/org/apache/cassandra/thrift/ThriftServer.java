@@ -55,7 +55,7 @@ public class ThriftServer implements CassandraDaemon.Server
         if (server == null)
         {
             CassandraServer iface = getCassandraServer();
-            server = new ThriftServerThread(address, port, backlog, iface, getProcessor(iface), getTransportFactory());
+            server = new ThriftServerThread(address, port, backlog, getProcessor(iface), getTransportFactory());
             server.start();
         }
     }
@@ -98,7 +98,6 @@ public class ThriftServer implements CassandraDaemon.Server
     protected TTransportFactory getTransportFactory()
     {
         int tFramedTransportSize = DatabaseDescriptor.getThriftFramedTransportSize();
-        logger.info("Using TFramedTransport with a max frame size of {} bytes.", tFramedTransportSize);
         return new TFramedTransport.Factory(tFramedTransportSize);
     }
 
@@ -113,7 +112,6 @@ public class ThriftServer implements CassandraDaemon.Server
         public ThriftServerThread(InetAddress listenAddr,
                                   int listenPort,
                                   int listenBacklog,
-                                  CassandraServer server,
                                   TProcessor processor,
                                   TTransportFactory transportFactory)
         {
@@ -124,7 +122,6 @@ public class ThriftServer implements CassandraDaemon.Server
             args.tProtocolFactory = new TBinaryProtocol.Factory(true, true);
             args.addr = new InetSocketAddress(listenAddr, listenPort);
             args.listenBacklog = listenBacklog;
-            args.cassandraServer = server;
             args.processor = processor;
             args.keepAlive = DatabaseDescriptor.getRpcKeepAlive();
             args.sendBufferSize = DatabaseDescriptor.getRpcSendBufferSize();

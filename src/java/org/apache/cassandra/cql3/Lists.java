@@ -19,27 +19,32 @@ package org.apache.cassandra.cql3;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.apache.cassandra.config.ColumnDefinition;
+import org.apache.cassandra.db.Cell;
 import org.apache.cassandra.db.ColumnFamily;
-import org.apache.cassandra.db.Column;
-import org.apache.cassandra.db.marshal.CollectionType;
+import org.apache.cassandra.db.composites.CellName;
+import org.apache.cassandra.db.composites.Composite;
 import org.apache.cassandra.db.marshal.Int32Type;
 import org.apache.cassandra.db.marshal.ListType;
 import org.apache.cassandra.exceptions.InvalidRequestException;
+import org.apache.cassandra.serializers.CollectionSerializer;
 import org.apache.cassandra.serializers.MarshalException;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
-import org.apache.cassandra.utils.Pair;
 import org.apache.cassandra.utils.UUIDGen;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Static helper methods and classes for lists.
  */
 public abstract class Lists
 {
+    private static final Logger logger = LoggerFactory.getLogger(Lists.class);
+
     private Lists() {}
 
     public static ColumnSpecification indexSpecOf(ColumnSpecification column)
@@ -61,19 +66,19 @@ public abstract class Lists
             this.elements = elements;
         }
 
-        public Term prepare(ColumnSpecification receiver) throws InvalidRequestException
+        public Term prepare(String keyspace, ColumnSpecification receiver) throws InvalidRequestException
         {
-            validateAssignableTo(receiver);
+            validateAssignableTo(keyspace, receiver);
 
             ColumnSpecification valueSpec = Lists.valueSpecOf(receiver);
             List<Term> values = new ArrayList<Term>(elements.size());
             boolean allTerminal = true;
             for (Term.Raw rt : elements)
             {
-                Term t = rt.prepare(valueSpec);
+                Term t = rt.prepare(keyspace, valueSpec);
 
                 if (t.containsBindMarker())
-                    throw new InvalidRequestException(String.format("Invalid list literal for %s: bind variables are not supported inside collection literals", receiver));
+                    throw new InvalidRequestException(String.format("Invalid list literal for %s: bind variables are not supported inside collection literals", receiver.name));
 
                 if (t instanceof Term.NonTerminal)
                     allTerminal = false;
@@ -81,33 +86,33 @@ public abstract class Lists
                 values.add(t);
             }
             DelayedValue value = new DelayedValue(values);
-            return allTerminal ? value.bind(Collections.<ByteBuffer>emptyList()) : value;
+            return allTerminal ? value.bind(QueryOptions.DEFAULT) : value;
         }
 
-        private void validateAssignableTo(ColumnSpecification receiver) throws InvalidRequestException
+        private void validateAssignableTo(String keyspace, ColumnSpecification receiver) throws InvalidRequestException
         {
             if (!(receiver.type instanceof ListType))
-                throw new InvalidRequestException(String.format("Invalid list literal for %s of type %s", receiver, receiver.type.asCQL3Type()));
+                throw new InvalidRequestException(String.format("Invalid list literal for %s of type %s", receiver.name, receiver.type.asCQL3Type()));
 
             ColumnSpecification valueSpec = Lists.valueSpecOf(receiver);
             for (Term.Raw rt : elements)
             {
-                if (!rt.isAssignableTo(valueSpec))
-                    throw new InvalidRequestException(String.format("Invalid list literal for %s: value %s is not of type %s", receiver, rt, valueSpec.type.asCQL3Type()));
+                if (!rt.testAssignment(keyspace, valueSpec).isAssignable())
+                    throw new InvalidRequestException(String.format("Invalid list literal for %s: value %s is not of type %s", receiver.name, rt, valueSpec.type.asCQL3Type()));
             }
         }
 
-        public boolean isAssignableTo(ColumnSpecification receiver)
+        public AssignmentTestable.TestResult testAssignment(String keyspace, ColumnSpecification receiver)
         {
-            try
-            {
-                validateAssignableTo(receiver);
-                return true;
-            }
-            catch (InvalidRequestException e)
-            {
-                return false;
-            }
+            if (!(receiver.type instanceof ListType))
+                return AssignmentTestable.TestResult.NOT_ASSIGNABLE;
+
+            // If there is no elements, we can't say it's an exact match (an empty list if fundamentally polymorphic).
+            if (elements.isEmpty())
+                return AssignmentTestable.TestResult.WEAKLY_ASSIGNABLE;
+
+            ColumnSpecification valueSpec = Lists.valueSpecOf(receiver);
+            return AssignmentTestable.TestResult.testAll(keyspace, valueSpec, elements);
         }
 
         @Override
@@ -117,7 +122,7 @@ public abstract class Lists
         }
     }
 
-    public static class Value extends Term.Terminal
+    public static class Value extends Term.MultiItemTerminal
     {
         public final List<ByteBuffer> elements;
 
@@ -126,16 +131,17 @@ public abstract class Lists
             this.elements = elements;
         }
 
-        public static Value fromSerialized(ByteBuffer value, ListType type) throws InvalidRequestException
+        public static Value fromSerialized(ByteBuffer value, ListType type, int version) throws InvalidRequestException
         {
             try
             {
                 // Collections have this small hack that validate cannot be called on a serialized object,
                 // but compose does the validation (so we're fine).
-                List<?> l = (List<?>)type.compose(value);
+                List<?> l = (List<?>)type.getSerializer().deserializeForNativeProtocol(value, version);
                 List<ByteBuffer> elements = new ArrayList<ByteBuffer>(l.size());
                 for (Object element : l)
-                    elements.add(type.elements.decompose(element));
+                    // elements can be null in lists that represent a set of IN values
+                    elements.add(element == null ? null : type.elements.decompose(element));
                 return new Value(elements);
             }
             catch (MarshalException e)
@@ -144,13 +150,30 @@ public abstract class Lists
             }
         }
 
-        public ByteBuffer get()
+        public ByteBuffer get(QueryOptions options)
         {
-            return CollectionType.pack(elements, elements.size());
+            return CollectionSerializer.pack(elements, elements.size(), options.getProtocolVersion());
+        }
+
+        public boolean equals(ListType lt, Value v)
+        {
+            if (elements.size() != v.elements.size())
+                return false;
+
+            for (int i = 0; i < elements.size(); i++)
+                if (lt.elements.compare(elements.get(i), v.elements.get(i)) != 0)
+                    return false;
+
+            return true;
+        }
+
+        public List<ByteBuffer> getElements()
+        {
+            return elements;
         }
     }
 
-    /*
+    /**
      * Basically similar to a Value, but with some non-pure function (that need
      * to be evaluated at execution time) in it.
      *
@@ -178,12 +201,12 @@ public abstract class Lists
         {
         }
 
-        public Value bind(List<ByteBuffer> values) throws InvalidRequestException
+        public Value bind(QueryOptions options) throws InvalidRequestException
         {
             List<ByteBuffer> buffers = new ArrayList<ByteBuffer>(elements.size());
             for (Term t : elements)
             {
-                ByteBuffer bytes = t.bindAndGet(values);
+                ByteBuffer bytes = t.bindAndGet(options);
 
                 if (bytes == null)
                     throw new InvalidRequestException("null is not supported inside collections");
@@ -200,6 +223,9 @@ public abstract class Lists
         }
     }
 
+    /**
+     * A marker for List values and IN relations
+     */
     public static class Marker extends AbstractMarker
     {
         protected Marker(int bindIndex, ColumnSpecification receiver)
@@ -208,11 +234,10 @@ public abstract class Lists
             assert receiver.type instanceof ListType;
         }
 
-        public Value bind(List<ByteBuffer> values) throws InvalidRequestException
+        public Value bind(QueryOptions options) throws InvalidRequestException
         {
-            ByteBuffer value = values.get(bindIndex);
-            return value == null ? null : Value.fromSerialized(value, (ListType)receiver.type);
-
+            ByteBuffer value = options.getValues().get(bindIndex);
+            return value == null ? null : Value.fromSerialized(value, (ListType)receiver.type, options.getProtocolVersion());
         }
     }
 
@@ -258,17 +283,17 @@ public abstract class Lists
 
     public static class Setter extends Operation
     {
-        public Setter(ColumnIdentifier column, Term t)
+        public Setter(ColumnDefinition column, Term t)
         {
             super(column, t);
         }
 
-        public void execute(ByteBuffer rowKey, ColumnFamily cf, ColumnNameBuilder prefix, UpdateParameters params) throws InvalidRequestException
+        public void execute(ByteBuffer rowKey, ColumnFamily cf, Composite prefix, UpdateParameters params) throws InvalidRequestException
         {
             // delete + append
-            ColumnNameBuilder column = prefix.add(columnName);
-            cf.addAtom(params.makeTombstoneForOverwrite(column.build(), column.buildAsEndOfRange()));
-            Appender.doAppend(t, cf, column, params);
+            CellName name = cf.getComparator().create(prefix, column);
+            cf.addAtom(params.makeTombstoneForOverwrite(name.slice()));
+            Appender.doAppend(t, cf, prefix, column, params);
         }
     }
 
@@ -276,7 +301,7 @@ public abstract class Lists
     {
         private final Term idx;
 
-        public SetterByIndex(ColumnIdentifier column, Term idx, Term t)
+        public SetterByIndex(ColumnDefinition column, Term idx, Term t)
         {
             super(column, t);
             this.idx = idx;
@@ -295,21 +320,20 @@ public abstract class Lists
             idx.collectMarkerSpecification(boundNames);
         }
 
-        public void execute(ByteBuffer rowKey, ColumnFamily cf, ColumnNameBuilder prefix, UpdateParameters params) throws InvalidRequestException
+        public void execute(ByteBuffer rowKey, ColumnFamily cf, Composite prefix, UpdateParameters params) throws InvalidRequestException
         {
-            ByteBuffer index = idx.bindAndGet(params.variables);
-            ByteBuffer value = t.bindAndGet(params.variables);
+            ByteBuffer index = idx.bindAndGet(params.options);
+            ByteBuffer value = t.bindAndGet(params.options);
 
             if (index == null)
                 throw new InvalidRequestException("Invalid null value for list index");
 
-            List<Pair<ByteBuffer, Column>> existingList = params.getPrefetchedList(rowKey, columnName);
+            List<Cell> existingList = params.getPrefetchedList(rowKey, column.name);
             int idx = ByteBufferUtil.toInt(index);
             if (idx < 0 || idx >= existingList.size())
                 throw new InvalidRequestException(String.format("List index %d out of bound, list has size %d", idx, existingList.size()));
 
-            ByteBuffer elementName = existingList.get(idx).right.name();
-
+            CellName elementName = existingList.get(idx).name();
             if (value == null)
             {
                 cf.addColumn(params.makeTombstone(elementName));
@@ -329,19 +353,19 @@ public abstract class Lists
 
     public static class Appender extends Operation
     {
-        public Appender(ColumnIdentifier column, Term t)
+        public Appender(ColumnDefinition column, Term t)
         {
             super(column, t);
         }
 
-        public void execute(ByteBuffer rowKey, ColumnFamily cf, ColumnNameBuilder prefix, UpdateParameters params) throws InvalidRequestException
+        public void execute(ByteBuffer rowKey, ColumnFamily cf, Composite prefix, UpdateParameters params) throws InvalidRequestException
         {
-            doAppend(t, cf, prefix.add(columnName), params);
+            doAppend(t, cf, prefix, column, params);
         }
 
-        static void doAppend(Term t, ColumnFamily cf, ColumnNameBuilder columnName, UpdateParameters params) throws InvalidRequestException
+        static void doAppend(Term t, ColumnFamily cf, Composite prefix, ColumnDefinition column, UpdateParameters params) throws InvalidRequestException
         {
-            Term.Terminal value = t.bind(params.variables);
+            Term.Terminal value = t.bind(params.options);
             // If we append null, do nothing. Note that for Setter, we've
             // already removed the previous value so we're good here too
             if (value == null)
@@ -351,24 +375,22 @@ public abstract class Lists
             List<ByteBuffer> toAdd = ((Lists.Value)value).elements;
             for (int i = 0; i < toAdd.size(); i++)
             {
-                ColumnNameBuilder b = i == toAdd.size() - 1 ? columnName : columnName.copy();
                 ByteBuffer uuid = ByteBuffer.wrap(UUIDGen.getTimeUUIDBytes());
-                ByteBuffer cellName = b.add(uuid).build();
-                cf.addColumn(params.makeColumn(cellName, toAdd.get(i)));
+                cf.addColumn(params.makeColumn(cf.getComparator().create(prefix, column, uuid), toAdd.get(i)));
             }
         }
     }
 
     public static class Prepender extends Operation
     {
-        public Prepender(ColumnIdentifier column, Term t)
+        public Prepender(ColumnDefinition column, Term t)
         {
             super(column, t);
         }
 
-        public void execute(ByteBuffer rowKey, ColumnFamily cf, ColumnNameBuilder prefix, UpdateParameters params) throws InvalidRequestException
+        public void execute(ByteBuffer rowKey, ColumnFamily cf, Composite prefix, UpdateParameters params) throws InvalidRequestException
         {
-            Term.Terminal value = t.bind(params.variables);
+            Term.Terminal value = t.bind(params.options);
             if (value == null)
                 return;
 
@@ -376,21 +398,18 @@ public abstract class Lists
             long time = PrecisionTime.REFERENCE_TIME - (System.currentTimeMillis() - PrecisionTime.REFERENCE_TIME);
 
             List<ByteBuffer> toAdd = ((Lists.Value)value).elements;
-            ColumnNameBuilder column = prefix.add(columnName);
             for (int i = 0; i < toAdd.size(); i++)
             {
-                ColumnNameBuilder b = i == toAdd.size() - 1 ? column : column.copy();
                 PrecisionTime pt = PrecisionTime.getNext(time);
                 ByteBuffer uuid = ByteBuffer.wrap(UUIDGen.getTimeUUIDBytes(pt.millis, pt.nanos));
-                ByteBuffer cellName = b.add(uuid).build();
-                cf.addColumn(params.makeColumn(cellName, toAdd.get(i)));
+                cf.addColumn(params.makeColumn(cf.getComparator().create(prefix, column, uuid), toAdd.get(i)));
             }
         }
     }
 
     public static class Discarder extends Operation
     {
-        public Discarder(ColumnIdentifier column, Term t)
+        public Discarder(ColumnDefinition column, Term t)
         {
             super(column, t);
         }
@@ -401,13 +420,13 @@ public abstract class Lists
             return true;
         }
 
-        public void execute(ByteBuffer rowKey, ColumnFamily cf, ColumnNameBuilder prefix, UpdateParameters params) throws InvalidRequestException
+        public void execute(ByteBuffer rowKey, ColumnFamily cf, Composite prefix, UpdateParameters params) throws InvalidRequestException
         {
-            List<Pair<ByteBuffer, Column>> existingList = params.getPrefetchedList(rowKey, columnName);
+            List<Cell> existingList = params.getPrefetchedList(rowKey, column.name);
             if (existingList.isEmpty())
                 return;
 
-            Term.Terminal value = t.bind(params.variables);
+            Term.Terminal value = t.bind(params.options);
             if (value == null)
                 return;
 
@@ -418,18 +437,17 @@ public abstract class Lists
             // the read-before-write this operation requires limits its usefulness on big lists, so in practice
             // toDiscard will be small and keeping a list will be more efficient.
             List<ByteBuffer> toDiscard = ((Lists.Value)value).elements;
-            for (Pair<ByteBuffer, Column> p : existingList)
+            for (Cell cell : existingList)
             {
-                Column element = p.right;
-                if (toDiscard.contains(element.value()))
-                    cf.addColumn(params.makeTombstone(element.name()));
+                if (toDiscard.contains(cell.value()))
+                    cf.addColumn(params.makeTombstone(cell.name()));
             }
         }
     }
 
     public static class DiscarderByIndex extends Operation
     {
-        public DiscarderByIndex(ColumnIdentifier column, Term idx)
+        public DiscarderByIndex(ColumnDefinition column, Term idx)
         {
             super(column, idx);
         }
@@ -440,20 +458,20 @@ public abstract class Lists
             return true;
         }
 
-        public void execute(ByteBuffer rowKey, ColumnFamily cf, ColumnNameBuilder prefix, UpdateParameters params) throws InvalidRequestException
+        public void execute(ByteBuffer rowKey, ColumnFamily cf, Composite prefix, UpdateParameters params) throws InvalidRequestException
         {
-            Term.Terminal index = t.bind(params.variables);
+            Term.Terminal index = t.bind(params.options);
             if (index == null)
                 throw new InvalidRequestException("Invalid null value for list index");
 
             assert index instanceof Constants.Value;
 
-            List<Pair<ByteBuffer, Column>> existingList = params.getPrefetchedList(rowKey, columnName);
+            List<Cell> existingList = params.getPrefetchedList(rowKey, column.name);
             int idx = ByteBufferUtil.toInt(((Constants.Value)index).bytes);
             if (idx < 0 || idx >= existingList.size())
                 throw new InvalidRequestException(String.format("List index %d out of bound, list has size %d", idx, existingList.size()));
 
-            ByteBuffer elementName = existingList.get(idx).right.name();
+            CellName elementName = existingList.get(idx).name();
             cf.addColumn(params.makeTombstone(elementName));
         }
     }

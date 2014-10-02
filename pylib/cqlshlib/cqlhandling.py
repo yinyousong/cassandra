@@ -17,10 +17,8 @@
 # code for dealing with CQL's syntax, rules, interpretation
 # i.e., stuff that's not necessarily cqlsh-specific
 
-import re
 import traceback
 from . import pylexotron, util
-from cql import cqltypes
 
 Hint = pylexotron.Hint
 
@@ -304,7 +302,7 @@ class CqlParsingRuleSet(pylexotron.ParsingRuleSet):
         if tok[0] == 'unclosedName':
             # strip one quote
             return tok[1][1:].replace('""', '"')
-        if tok[0] == 'stringLiteral':
+        if tok[0] == 'quotedStringLiteral':
             # strip quotes
             return tok[1][1:-1].replace("''", "'")
         if tok[0] == 'unclosedString':
